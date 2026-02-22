@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "VKR English Helper",
+  "description": "Перевод выделенного текста и добавление слов в словарь VKR.",
+  "version": "0.1.0",
+  "permissions": ["activeTab", "storage", "tabs"],
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*"
+  ],
+  "action": {
+    "default_title": "VKR Helper",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VKR Helper</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <h1>VKR Helper</h1>
+
+      <label>
+        Email
+        <input id="email" type="email" placeholder="user@example.com" />
+      </label>
+
+      <label>
+        JWT токен
+        <input id="token" type="text" placeholder="Сначала получи токен" readonly />
+      </label>
+
+      <div class="auth-actions">
+        <button id="authTokenBtn" type="button">Получить токен</button>
+        <button id="clearTokenBtn" type="button">Сбросить</button>
+      </div>
+
+      <label>
+        User ID
+        <input id="userId" type="number" min="1" placeholder="Например: 1" readonly />
+      </label>
+
+      <label>
+        Выделенный текст
+        <textarea id="selectedText" rows="2" placeholder="Выдели текст на странице"></textarea>
+      </label>
+
+      <label>
+        Контекст
+        <textarea id="sourceSentence" rows="3" placeholder="Контекст предложения"></textarea>
+      </label>
+
+      <div class="actions">
+        <button id="refreshSelection" type="button">Обновить выделение</button>
+        <button id="translateBtn" type="button">Перевести</button>
+        <button id="addBtn" type="button">Добавить в словарь</button>
+      </div>
+
+      <section class="result">
+        <h2>Результат</h2>
+        <pre id="output">-</pre>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
