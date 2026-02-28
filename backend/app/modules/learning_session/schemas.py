@@ -42,6 +42,7 @@ class SessionAnswerFeedback(BaseModel):
 class SessionSubmitResponse(BaseModel):
     session: SessionSummary
     incorrect_feedback: list[SessionAnswerFeedback] = Field(default_factory=list)
+    advice_feedback: list[SessionAnswerFeedback] = Field(default_factory=list)
 
 
 class SessionAnswerRead(BaseModel):

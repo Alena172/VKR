@@ -737,6 +737,16 @@ export default function TrainingPage({ onError }) {
           ) : (
             <p className="mt-2 text-sm text-green-700">Отлично, ошибок нет.</p>
           )}
+          {sessionResult.advice_feedback?.length > 0 ? (
+            <div className="mt-4">
+              <p className="text-sm font-semibold text-gray-900">Рекомендации по стилю</p>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+                {sessionResult.advice_feedback.map((item) => (
+                  <li key={`advice-${item.exercise_id}`}>{item.explanation_ru}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </section>
       ) : null}
     </section>

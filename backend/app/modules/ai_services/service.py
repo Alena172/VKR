@@ -170,6 +170,14 @@ class AIService:
             )
         )
 
+    def _fallback_improvement_hint(self) -> ExplainErrorResponse:
+        return ExplainErrorResponse(
+            explanation_ru=(
+                "Перевод засчитан как верный. Можно улучшить стиль: выбрать более нейтральную "
+                "формулировку и терминологию ближе к учебному контексту."
+            )
+        )
+
     def explain_error(self, payload: ExplainErrorRequest) -> ExplainErrorResponse:
         content = self._chat_completion(
             system_prompt=(
@@ -188,6 +196,61 @@ class AIService:
         if content:
             return ExplainErrorResponse(explanation_ru=content)
         return self._fallback_explain_error()
+
+    def suggest_improvement(self, payload: ExplainErrorRequest) -> ExplainErrorResponse:
+        content = self._chat_completion(
+            system_prompt=(
+                "Ты преподаватель английского для русскоязычных пользователей. "
+                "Ответ пользователя уже считается правильным. "
+                "Дай мягкую и краткую рекомендацию по стилю перевода на русском, без слова 'ошибка'."
+            ),
+            user_prompt=(
+                f"Задание: {payload.english_prompt}\n"
+                f"Ожидаемый вариант: {payload.expected_answer}\n"
+                f"Вариант пользователя: {payload.user_answer}\n"
+                "Сформулируй рекомендацию в 1-2 предложениях."
+            ),
+            temperature=0.1,
+            max_tokens=180,
+        )
+        if content:
+            return ExplainErrorResponse(explanation_ru=content)
+        return self._fallback_improvement_hint()
+
+    def is_translation_semantically_correct(
+        self,
+        *,
+        english_prompt: str,
+        expected_answer: str,
+        user_answer: str,
+    ) -> bool:
+        content = self._chat_completion(
+            system_prompt=(
+                "Ты проверяешь переводы с английского на русский. "
+                "Если пользовательский перевод передает тот же основной смысл, считай его правильным, "
+                "даже если стиль неидеален или слова отличаются. "
+                "Незначительные стилистические огрехи не делают ответ неправильным. "
+                "Верни только JSON: {\"equivalent\": true|false}."
+            ),
+            user_prompt=(
+                f"Исходное задание: {english_prompt}\n"
+                f"Эталонный перевод: {expected_answer}\n"
+                f"Перевод пользователя: {user_answer}\n"
+                "Сравни смысл."
+            ),
+            temperature=0.0,
+            max_tokens=60,
+        )
+        if content:
+            payload = self._extract_json_payload(content)
+            if isinstance(payload, dict) and isinstance(payload.get("equivalent"), bool):
+                return payload["equivalent"]
+            lowered = content.lower()
+            if "true" in lowered:
+                return True
+            if "false" in lowered:
+                return False
+        return False
 
     def _fallback_context_definition(
         self,
@@ -656,22 +719,29 @@ class AIService:
 
     def _build_sentence_for_word(self, seed: ExerciseSeed, cefr_level: str | None = None) -> str:
         # Sentence generation is remote-only (no local templates/fallback).
+        if not self._remote_enabled():
+            raise TranslationProviderUnavailableError(
+                "Sentence generation requires remote AI provider. "
+                "Use AI_PROVIDER=ollama or set AI_PROVIDER=openai_compatible with AI_API_KEY."
+            )
+
         word = seed.english_lemma.strip().lower()
         level = (cefr_level or "A2").upper()
         remote_sentence = self._generate_sentence_with_remote(word=word, cefr_level=level)
         if remote_sentence:
             return remote_sentence
+
         raise TranslationProviderUnavailableError(
-            "Sentence generation requires remote AI provider. "
-            "Use AI_PROVIDER=ollama or set AI_PROVIDER=openai_compatible with AI_API_KEY."
+            "Sentence generation request failed. "
+            "Check AI_BASE_URL, AI_MODEL and provider availability."
         )
 
     def _sentence_word_limits(self, cefr_level: str) -> tuple[int, int]:
         if cefr_level in {"A1", "A2"}:
-            return (6, 14)
+            return (6, 18)
         if cefr_level in {"B1", "B2"}:
-            return (8, 18)
-        return (10, 22)
+            return (8, 24)
+        return (10, 28)
 
     def _is_sentence_suitable(self, sentence: str, target_word: str, cefr_level: str) -> bool:
         text = re.sub(r"\s+", " ", sentence.strip())
@@ -701,8 +771,9 @@ class AIService:
         for _ in range(self._max_retries + 2):
             content = self._chat_completion(
                 system_prompt=(
-                    "You are an English teacher. Generate one grammatically correct, natural sentence "
-                    "for an English learner. Keep it CEFR-appropriate and practical."
+                    "You are an English teacher. Generate one natural, high-frequency, grammatically correct "
+                    "English sentence for a Russian-speaking learner. "
+                    "Use plain modern spoken/written English and avoid bookish phrasing."
                 ),
                 user_prompt=(
                     f"Target word: {word}\n"
@@ -710,9 +781,12 @@ class AIService:
                     f"Avoid repeating these recent sentences: {json.dumps(list(history), ensure_ascii=False)}\n"
                     "Constraints:\n"
                     "- one sentence only\n"
-                    "- everyday context (school, work, home, study)\n"
+                    "- everyday context (home, study, work, shopping, transport)\n"
                     "- avoid fantasy, rare names, unusual locations\n"
                     "- include the target word exactly once\n"
+                    "- prefer short natural collocations used by natives\n"
+                    "- avoid stiff phrases like 'during the quiet hours' and similar literary wording\n"
+                    "- do not use markdown, quotes, bullets, numbering\n"
                     "- output sentence only"
                 ),
                 temperature=0.2,
@@ -720,11 +794,17 @@ class AIService:
             )
             if not content:
                 continue
-            candidate = content.strip().strip('"')
+            candidate = self._sanitize_generated_sentence(content)
             if self._is_sentence_suitable(candidate, word, cefr_level) and candidate not in history:
                 history.append(candidate)
                 return candidate
         return None
+
+    def _sanitize_generated_sentence(self, text: str) -> str:
+        candidate = text.strip().strip('"').strip("'")
+        candidate = candidate.replace("**", "").replace("__", "").replace("`", "")
+        candidate = re.sub(r"\s+", " ", candidate).strip()
+        return candidate
 
     def _build_ru_translation_of_sentence(self, sentence_en: str, seed: ExerciseSeed) -> str:
         if self._remote_enabled():

@@ -10,7 +10,7 @@ from app.modules.ai_services.contracts import ExplainErrorRequest
 from app.modules.ai_services.service import ai_service
 from app.modules.context_memory.repository import context_repository
 from app.modules.learning_session.repository import AnswerPersistPayload, learning_session_repository
-from app.modules.learning_session.evaluation import is_answer_correct
+from app.modules.learning_session.evaluation import is_answer_correct, normalize_answer
 from app.modules.learning_session.schemas import (
     SessionAnswerRead,
     SessionAnswerFeedback,
@@ -160,6 +160,7 @@ def submit_session(
         raise HTTPException(status_code=404, detail="User not found")
 
     feedback: list[SessionAnswerFeedback] = []
+    advice_feedback: list[SessionAnswerFeedback] = []
     to_persist: list[AnswerPersistPayload] = []
     difficult_words_to_add: list[str] = []
     total = len(payload.answers)
@@ -167,9 +168,41 @@ def submit_session(
 
     for answer in payload.answers:
         evaluated_is_correct = is_answer_correct(answer.expected_answer, answer.user_answer)
-        if evaluated_is_correct:
-            correct += 1
         explanation_ru: str | None = None
+        advice_added = False
+        normalized_expected = normalize_answer(answer.expected_answer)
+        normalized_user = normalize_answer(answer.user_answer)
+
+        if (
+            not evaluated_is_correct
+            and answer.prompt
+            and answer.expected_answer
+            and len(normalized_expected.split()) >= 5
+        ):
+            # Semantic pass for full sentence translations:
+            # near-paraphrases should be accepted, with style feedback instead of hard error.
+            semantic_ok = ai_service.is_translation_semantically_correct(
+                english_prompt=answer.prompt,
+                expected_answer=answer.expected_answer,
+                user_answer=answer.user_answer,
+            )
+            if semantic_ok:
+                evaluated_is_correct = True
+                ai_hint = ai_service.suggest_improvement(
+                    ExplainErrorRequest(
+                        english_prompt=answer.prompt,
+                        user_answer=answer.user_answer,
+                        expected_answer=answer.expected_answer,
+                    )
+                )
+                explanation_ru = ai_hint.explanation_ru
+                advice_feedback.append(
+                    SessionAnswerFeedback(
+                        exercise_id=answer.exercise_id,
+                        explanation_ru=explanation_ru,
+                    )
+                )
+                advice_added = True
 
         if (
             not evaluated_is_correct
@@ -197,6 +230,31 @@ def submit_session(
             )
             if prompt_word:
                 difficult_words_to_add.append(prompt_word)
+        elif (
+            evaluated_is_correct
+            and answer.prompt
+            and answer.expected_answer
+            and normalized_expected
+            and normalized_expected != normalized_user
+            and not advice_added
+        ):
+            ai_hint = ai_service.suggest_improvement(
+                ExplainErrorRequest(
+                    english_prompt=answer.prompt,
+                    user_answer=answer.user_answer,
+                    expected_answer=answer.expected_answer,
+                )
+            )
+            explanation_ru = ai_hint.explanation_ru
+            advice_feedback.append(
+                SessionAnswerFeedback(
+                    exercise_id=answer.exercise_id,
+                    explanation_ru=explanation_ru,
+                )
+            )
+
+        if evaluated_is_correct:
+            correct += 1
 
         progress_word = _extract_progress_word(
             prompt=answer.prompt,
@@ -238,4 +296,8 @@ def submit_session(
         answers=to_persist,
     )
 
-    return SessionSubmitResponse(session=session_row, incorrect_feedback=feedback)
+    return SessionSubmitResponse(
+        session=session_row,
+        incorrect_feedback=feedback,
+        advice_feedback=advice_feedback,
+    )
