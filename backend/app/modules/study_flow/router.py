@@ -11,6 +11,7 @@ from app.modules.ai_services.service import (
 from app.modules.capture.models import CaptureItemModel
 from app.modules.capture.schemas import CaptureItem
 from app.modules.context_memory.repository import context_repository
+from app.modules.learning_graph.repository import learning_graph_repository
 from app.modules.study_flow.schemas import (
     CaptureToVocabularyRequest,
     CaptureToVocabularyRequestMe,
@@ -100,6 +101,16 @@ async def _capture_to_vocabulary_for_user(
         vocabulary_row = existing
 
     progress = context_repository.ensure_word_progress(db, user_id=user_id, word=english_lemma)
+    learning_graph_repository.semantic_upsert(
+        db,
+        user_id=user_id,
+        english_lemma=english_lemma,
+        russian_translation=russian_translation,
+        context_definition_ru=context_definition_ru,
+        source_sentence=source_sentence,
+        source_url=source_url,
+        vocabulary_item_id=vocabulary_row.id,
+    )
     db.commit()
 
     db.refresh(capture_row)

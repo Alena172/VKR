@@ -247,6 +247,29 @@ alembic downgrade -1
 - `mastered`: сколько слов стабилизированы (по текущему порогу streak)
 - `troubled`: сколько слов остаются проблемными (по текущему порогу ошибок)
 
+## Personal Learning Graph
+
+`GET /api/v1/learning-graph/me/overview`:
+- агрегаты графа пользователя: интересы, кластеры, senses, события ошибок, количество связей
+- топ интересов, топ кластеров, топ тегов ошибок
+
+`GET /api/v1/learning-graph/me/interests`:
+- список интересов пользователя с весами
+
+`PUT /api/v1/learning-graph/me/interests`:
+- upsert интересов пользователя
+- тело: `interests[]` с полями `interest`, `weight`
+
+`POST /api/v1/learning-graph/me/semantic-upsert`:
+- семантическая дедупликация словаря по паре (`english_lemma`, `semantic_key`)
+- автоматически назначает `topic_cluster`
+- может создать связь с существующим `vocabulary_item` через `vocabulary_item_id`
+
+`GET /api/v1/learning-graph/me/recommendations?mode=mixed&limit=10`:
+- рекомендации слов из графа
+- режимы: `interest`, `weakness`, `mixed`
+- для каждого слова возвращаются `score`, `reasons`, `topic_cluster`, `mistake_count`
+
 ## Сквозной orchestration-flow
 
 `POST /api/v1/study-flow/capture-to-vocabulary` выполняет в одном запросе:

@@ -9,6 +9,7 @@ from app.modules.auth.dependencies import get_current_user_id
 from app.modules.ai_services.contracts import ExplainErrorRequest
 from app.modules.ai_services.service import ai_service
 from app.modules.context_memory.repository import context_repository
+from app.modules.learning_graph.repository import learning_graph_repository
 from app.modules.learning_session.repository import AnswerPersistPayload, learning_session_repository
 from app.modules.learning_session.evaluation import is_answer_correct, normalize_answer
 from app.modules.learning_session.schemas import (
@@ -230,6 +231,14 @@ def submit_session(
             )
             if prompt_word:
                 difficult_words_to_add.append(prompt_word)
+            learning_graph_repository.add_mistake_event(
+                db,
+                user_id=target_user_id,
+                english_lemma=prompt_word,
+                prompt=answer.prompt,
+                expected_answer=answer.expected_answer,
+                user_answer=answer.user_answer,
+            )
         elif (
             evaluated_is_correct
             and answer.prompt

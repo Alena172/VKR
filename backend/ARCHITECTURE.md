@@ -20,6 +20,7 @@
 - context_memory: уровень CEFR, цели, сложные слова и учебные сигналы
 - ai_services: фасад AI/ML-инференса
 - analytics: метрики прогресса
+- learning_graph: персональный граф обучения (интересы, semantic senses, кластеры, ошибки)
 
 ## Правила интеграции
 - Модули взаимодействуют через явные сервисные интерфейсы или API-контракты.
@@ -71,6 +72,11 @@ AI-сценарии (текущий локальный stub-провайдер):
 - `context/{user_id}/review-plan` отдает единый ответ для экрана повторения с настраиваемым горизонтом (due/upcoming/recommended)
 - `analytics/review-summary` агрегирует состояние SRS (due/mastered/troubled) для дашборда
 - `study-flow/capture-to-vocabulary` объединяет capture/translation/vocabulary/SRS-init в одном endpoint
+- `study-flow/capture-to-vocabulary` также синхронизирует `learning_graph.word_senses` и связь с `vocabulary_items`
+- `learning_graph/me/interests` позволяет управлять интересами пользователя как сигналом рекомендаций
+- `learning_graph/me/semantic-upsert` обеспечивает семантическую дедупликацию (lemma + semantic_key)
+- `learning_graph/me/recommendations` отдает рекомендации в режимах `interest|weakness|mixed`
+- `learning_graph/me/overview` дает агрегированную картину графа (узлы/ребра/топ-кластеры/теги ошибок)
 - `study-flow/me/capture-to-vocabulary` и `capture/me` дают тот же сценарий через user-scoped JWT-маршруты
 - `translate/me` и `exercises/me/generate` фиксируют AI-сценарии без явного `user_id` в клиентских payload
 - `auth/token`, `auth/verify` и `auth/me` закрывают JWT-аутентификацию и идентификацию пользователя

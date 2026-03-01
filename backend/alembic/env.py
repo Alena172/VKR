@@ -9,12 +9,30 @@ from app.core.config import get_settings
 from app.core.db import Base
 from app.modules.capture.models import CaptureItemModel
 from app.modules.context_memory.models import UserContextModel
+from app.modules.learning_graph.models import (
+    MistakeEventModel,
+    TopicClusterModel,
+    UserInterestModel,
+    VocabularySenseLinkModel,
+    WordSenseModel,
+)
 from app.modules.learning_session.models import LearningSessionModel
 from app.modules.users.models import UserModel
 from app.modules.vocabulary.models import VocabularyItemModel
 
 # Register models for metadata discovery.
-_ = (UserModel, VocabularyItemModel, CaptureItemModel, LearningSessionModel, UserContextModel)
+_ = (
+    UserModel,
+    VocabularyItemModel,
+    CaptureItemModel,
+    LearningSessionModel,
+    UserContextModel,
+    UserInterestModel,
+    TopicClusterModel,
+    WordSenseModel,
+    VocabularySenseLinkModel,
+    MistakeEventModel,
+)
 
 config = context.config
 settings = get_settings()
