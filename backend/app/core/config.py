@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     jwt_secret: str = "change_me"
     jwt_issuer: str = "vkr"
     jwt_access_ttl_minutes: int = 60 * 24
+    # Celery / Redis
+    redis_url: str = "redis://localhost:6379/0"
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/1"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

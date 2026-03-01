@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.modules.ai_services.service import ai_service
 from app.modules.auth.dependencies import get_current_user_id
 from app.modules.users.repository import users_repository
 from app.modules.vocabulary.repository import vocabulary_repository
@@ -14,6 +14,12 @@ from app.modules.vocabulary.schemas import (
 )
 
 router = APIRouter(prefix="/vocabulary", tags=["vocabulary"])
+
+
+class AsyncTaskResponse(BaseModel):
+    task_id: str
+    status: str = "PENDING"
+    message: str = "Task queued. Poll /api/v1/tasks/{task_id} for result."
 
 
 @router.get("/me", response_model=list[VocabularyItem])
@@ -35,71 +41,67 @@ def list_items(
     return vocabulary_repository.list_items(db, user_id=user_id or current_user_id)
 
 
-@router.post("/me", response_model=VocabularyItem)
+@router.post("/me", response_model=AsyncTaskResponse, status_code=202)
 def add_my_item(
     payload: VocabularyItemCreateMe,
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
-) -> VocabularyItem:
+) -> AsyncTaskResponse:
+    """Queue vocabulary item creation with AI context definition generation.
+
+    Returns 202 Accepted with a task_id. Poll GET /api/v1/tasks/{task_id}
+    until status == SUCCESS to get the created VocabularyItem.
+    """
     user = users_repository.get_by_id(db, current_user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+
+    from app.tasks.vocabulary_tasks import add_word_with_ai
+
     english_lemma = payload.english_lemma.strip().lower()
     russian_translation = payload.russian_translation.strip()
     source_sentence = payload.source_sentence.strip() if payload.source_sentence else None
-    context_definition_ru = ai_service.generate_context_definition(
+    source_url = payload.source_url.strip() if payload.source_url else None
+
+    task = add_word_with_ai.delay(
+        user_id=current_user_id,
         english_lemma=english_lemma,
         russian_translation=russian_translation,
         source_sentence=source_sentence,
-        cefr_level=user.cefr_level,
+        source_url=source_url,
     )
-    return vocabulary_repository.create(
-        db,
-        VocabularyItemCreate(
-            user_id=current_user_id,
-            english_lemma=english_lemma,
-            russian_translation=russian_translation,
-            context_definition_ru=context_definition_ru,
-            source_sentence=source_sentence,
-            source_url=payload.source_url.strip() if payload.source_url else None,
-        ),
-    )
+    return AsyncTaskResponse(task_id=task.id)
 
 
-@router.post("", response_model=VocabularyItem)
+@router.post("", response_model=AsyncTaskResponse, status_code=202)
 def add_item(
     payload: VocabularyItemCreate,
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
-) -> VocabularyItem:
+) -> AsyncTaskResponse:
+    """Queue vocabulary item creation (admin/explicit user_id variant)."""
     target_user_id = payload.user_id or current_user_id
     if payload.user_id is not None and payload.user_id != current_user_id:
         raise HTTPException(status_code=403, detail="Forbidden")
     user = users_repository.get_by_id(db, target_user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+
+    from app.tasks.vocabulary_tasks import add_word_with_ai
+
     english_lemma = payload.english_lemma.strip().lower()
     russian_translation = payload.russian_translation.strip()
     source_sentence = payload.source_sentence.strip() if payload.source_sentence else None
-    context_definition_ru = ai_service.generate_context_definition(
+    source_url = payload.source_url.strip() if payload.source_url else None
+
+    task = add_word_with_ai.delay(
+        user_id=target_user_id,
         english_lemma=english_lemma,
         russian_translation=russian_translation,
         source_sentence=source_sentence,
-        cefr_level=user.cefr_level,
+        source_url=source_url,
     )
-    return vocabulary_repository.create(
-        db,
-        payload.model_copy(
-            update={
-                "user_id": target_user_id,
-                "english_lemma": english_lemma,
-                "russian_translation": russian_translation,
-                "context_definition_ru": context_definition_ru,
-                "source_sentence": source_sentence,
-                "source_url": payload.source_url.strip() if payload.source_url else None,
-            }
-        ),
-    )
+    return AsyncTaskResponse(task_id=task.id)
 
 
 @router.put("/me/{item_id}", response_model=VocabularyItem)

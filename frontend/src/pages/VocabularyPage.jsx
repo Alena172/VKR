@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { api, pollTask } from "../lib/api";
 import LoadingSpinner from "../components/LoadingSpinner";
 
 export default function VocabularyPage({ onError }) {
@@ -17,6 +17,7 @@ export default function VocabularyPage({ onError }) {
   const [editUrl, setEditUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [studyFlowLoading, setStudyFlowLoading] = useState(false);
+  const [studyFlowStatus, setStudyFlowStatus] = useState("");
   const [translateLoading, setTranslateLoading] = useState(false);
 
   async function loadVocabulary() {
@@ -34,17 +35,33 @@ export default function VocabularyPage({ onError }) {
   async function addViaStudyFlow(event) {
     event.preventDefault();
     setStudyFlowLoading(true);
+    setStudyFlowStatus("Отправляю задачу...");
     onError("");
     try {
-      await api.studyFlowCaptureToVocabularyMe({
+      // 1. Dispatch the task — returns immediately with task_id
+      const { task_id } = await api.studyFlowCaptureToVocabularyMe({
         selected_text: selectedText,
         source_sentence: sourceSentence,
       });
+
+      // 2. Poll until done, updating status message
+      setStudyFlowStatus("Обрабатываю слово...");
+      await pollTask(task_id, {
+        intervalMs: 800,
+        maxAttempts: 90,
+        onStatus: (status) => {
+          if (status === "STARTED") setStudyFlowStatus("AI генерирует определение...");
+          else if (status === "RETRY") setStudyFlowStatus("Повторная попытка...");
+        },
+      });
+
+      setStudyFlowStatus("Готово!");
       await loadVocabulary();
     } catch (error) {
       onError(error.message);
     } finally {
       setStudyFlowLoading(false);
+      setStudyFlowStatus("");
     }
   }
 
@@ -124,7 +141,12 @@ export default function VocabularyPage({ onError }) {
 
   return (
     <section className="space-y-4">
-      {studyFlowLoading && <LoadingSpinner message="Добавляю слово в словарь..." estimatedSeconds="3-5" />}
+      {studyFlowLoading && (
+        <LoadingSpinner
+          message={studyFlowStatus || "Добавляю слово в словарь..."}
+          estimatedSeconds="2-5"
+        />
+      )}
       {translateLoading && <LoadingSpinner message="Перевожу текст..." estimatedSeconds="2-4" />}
 
       <header className="surface p-4 md:p-5">
@@ -145,7 +167,9 @@ export default function VocabularyPage({ onError }) {
             placeholder="Контекст предложения"
           />
           <div className="flex flex-wrap gap-2">
-            <button className="btn-primary" type="submit">Добавить слово</button>
+            <button className="btn-primary" type="submit" disabled={studyFlowLoading}>
+              {studyFlowLoading ? "Добавляю..." : "Добавить слово"}
+            </button>
           </div>
         </form>
 

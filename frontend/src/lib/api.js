@@ -44,6 +44,33 @@ function toQuery(params) {
   return query ? `?${query}` : "";
 }
 
+/**
+ * Poll a Celery task until it reaches SUCCESS or FAILURE.
+ *
+ * @param {string} taskId - The task ID returned by a 202 endpoint.
+ * @param {object} options
+ * @param {number} [options.intervalMs=1000] - Polling interval in ms.
+ * @param {number} [options.maxAttempts=60] - Max polling attempts before timeout.
+ * @param {function} [options.onStatus] - Optional callback called on each poll with the status string.
+ * @returns {Promise<any>} Resolves with the task result on SUCCESS.
+ */
+export async function pollTask(taskId, { intervalMs = 1000, maxAttempts = 60, onStatus } = {}) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const data = await request(`/tasks/${taskId}`);
+    if (onStatus) onStatus(data.status);
+
+    if (data.status === "SUCCESS") {
+      return data.result;
+    }
+    if (data.status === "FAILURE") {
+      throw new Error(data.error || "Task failed");
+    }
+    // PENDING / STARTED / RETRY — wait and try again
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error("Task timed out after polling");
+}
+
 export const api = {
   getUsers: () => request("/users"),
   createUser: (payload) => request("/users", { method: "POST", body: JSON.stringify(payload) }),
@@ -54,10 +81,12 @@ export const api = {
   aiStatus: () => request("/ai/status"),
 
   listVocabularyMe: () => request("/vocabulary/me"),
+  /** Returns { task_id, status, message } — use pollTask(task_id) to wait for the result. */
   addVocabularyMe: (payload) => request("/vocabulary/me", { method: "POST", body: JSON.stringify(payload) }),
   updateVocabularyMe: (itemId, payload) => request(`/vocabulary/me/${itemId}`, { method: "PUT", body: JSON.stringify(payload) }),
   deleteVocabularyMe: (itemId) => request(`/vocabulary/me/${itemId}`, { method: "DELETE" }),
 
+  /** Returns { task_id, status, message } — use pollTask(task_id) to wait for the result. */
   studyFlowCaptureToVocabularyMe: (payload) =>
     request("/study-flow/me/capture-to-vocabulary", { method: "POST", body: JSON.stringify(payload) }),
 
@@ -72,8 +101,12 @@ export const api = {
   reviewSummary: () => request("/analytics/review-summary/me"),
 
   translateMe: (payload) => request("/translate/me", { method: "POST", body: JSON.stringify(payload) }),
+  /** Returns { task_id, status, message } — use pollTask(task_id) to wait for the result. */
   generateExercisesMe: (payload) => request("/exercises/me/generate", { method: "POST", body: JSON.stringify(payload) }),
   listSessionsMe: (params = {}) => request(`/sessions/me${toQuery(params)}`),
   listSessionAnswersMe: (sessionId) => request(`/sessions/me/${sessionId}/answers`),
   submitSession: (payload) => request("/sessions/submit", { method: "POST", body: JSON.stringify(payload) }),
+
+  /** Poll a task by ID. */
+  getTaskStatus: (taskId) => request(`/tasks/${taskId}`),
 };
