@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../lib/api";
+import { api, pollTask } from "../lib/api";
 import LoadingSpinner from "../components/LoadingSpinner";
 
 const PREFETCH_BATCH_SIZE = 2;
@@ -298,11 +298,14 @@ export default function TrainingPage({ onError }) {
   }
 
   async function generateBatch(targetMode, batchSize) {
-    const data = await api.generateExercisesMe({ size: batchSize, mode: targetMode, vocabulary_ids: [] });
-    if (!data.exercises || data.exercises.length === 0) {
+    // 1. Dispatch task — returns immediately with task_id
+    const { task_id } = await api.generateExercisesMe({ size: batchSize, mode: targetMode, vocabulary_ids: [] });
+    // 2. Poll until the worker finishes
+    const result = await pollTask(task_id, { intervalMs: 700, maxAttempts: 90 });
+    if (!result || !result.exercises || result.exercises.length === 0) {
       throw new Error("Не удалось получить задание.");
     }
-    return data.exercises;
+    return result.exercises;
   }
 
   function resetSessionState() {

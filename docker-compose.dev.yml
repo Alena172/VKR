@@ -8,6 +8,15 @@ services:
       sh -c "python -m alembic upgrade head &&
       python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
+  celery_worker:
+    volumes:
+      - ./backend:/app/backend
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"
+    command: >
+      sh -c "python -m celery -A app.celery_app:celery_app worker
+      --loglevel=info --concurrency=2 -Q celery --pool=solo"
+
   frontend:
     volumes:
       - ./frontend:/app/frontend
