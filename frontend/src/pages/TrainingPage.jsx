@@ -44,6 +44,7 @@ export default function TrainingPage({ onError }) {
   const [loadingPrefetch, setLoadingPrefetch] = useState(false);
   const [sessionResult, setSessionResult] = useState(null);
   const [isTrainingActive, setIsTrainingActive] = useState(false);
+  const [generationNote, setGenerationNote] = useState("");
 
   const selectedLetters = scrambleState.selected;
   const availableLetters = scrambleState.available;
@@ -305,7 +306,7 @@ export default function TrainingPage({ onError }) {
     if (!result || !result.exercises || result.exercises.length === 0) {
       throw new Error("Не удалось получить задание.");
     }
-    return result.exercises;
+    return { exercises: result.exercises, note: result.note || "" };
   }
 
   function resetSessionState() {
@@ -318,6 +319,7 @@ export default function TrainingPage({ onError }) {
     setSubmittedAnswers([]);
     setSessionResult(null);
     setIsTrainingActive(false);
+    setGenerationNote("");
   }
 
   async function startTraining() {
@@ -325,7 +327,7 @@ export default function TrainingPage({ onError }) {
     onError("");
     try {
       const initialBatchSize = Math.min(PREFETCH_BATCH_SIZE, size);
-      const initialExercises = await generateBatch(mode, initialBatchSize);
+      const { exercises: initialExercises, note } = await generateBatch(mode, initialBatchSize);
       setCurrentExercise(initialExercises[0]);
       setCurrentIndex(0);
       setCurrentAnswer("");
@@ -334,6 +336,7 @@ export default function TrainingPage({ onError }) {
       setSubmittedAnswers([]);
       setBufferExercises(initialExercises.slice(1));
       setFetchedCount(initialExercises.length);
+      setGenerationNote(note);
       setSessionResult(null);
       setIsTrainingActive(true);
     } catch (error) {
@@ -389,13 +392,14 @@ export default function TrainingPage({ onError }) {
     try {
       const remaining = size - fetchedCount;
       const batchSize = Math.max(1, Math.min(PREFETCH_BATCH_SIZE, remaining));
-      const generatedBatch = await generateBatch(mode, batchSize);
+      const { exercises: generatedBatch, note } = await generateBatch(mode, batchSize);
       const [nextExercise, ...rest] = generatedBatch;
       setCurrentExercise(nextExercise);
       setBufferExercises(rest);
       setFetchedCount((prev) => prev + generatedBatch.length);
       setCurrentIndex(nextIndex);
       setCurrentAnswer("");
+      setGenerationNote(note);
       initWordScrambleState(nextExercise, nextIndex);
       initDefinitionMatchState(nextExercise);
     } catch (error) {
@@ -428,12 +432,15 @@ export default function TrainingPage({ onError }) {
     setLoadingPrefetch(true);
     const batchSize = Math.min(PREFETCH_BATCH_SIZE, remaining);
     generateBatch(mode, batchSize)
-      .then((batch) => {
+      .then(({ exercises: batch, note }) => {
         if (cancelled) {
           return;
         }
         setBufferExercises((prev) => [...prev, ...batch]);
         setFetchedCount((prev) => prev + batch.length);
+        if (note) {
+          setGenerationNote(note);
+        }
       })
       .catch((error) => {
         if (!cancelled) {
@@ -515,6 +522,7 @@ export default function TrainingPage({ onError }) {
             </button>
           ) : null}
           {isTrainingActive ? <span className="chip">Задание {currentIndex + 1} из {size}</span> : null}
+          {generationNote ? <span className="chip">{generationNote}</span> : null}
         </div>
       </header>
 

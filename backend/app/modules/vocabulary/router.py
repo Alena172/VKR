@@ -7,6 +7,8 @@ from app.modules.auth.dependencies import get_current_user_id
 from app.modules.users.repository import users_repository
 from app.modules.vocabulary.repository import vocabulary_repository
 from app.modules.vocabulary.schemas import (
+    VocabularyFromCaptureRequest,
+    VocabularyFromCaptureRequestMe,
     VocabularyItem,
     VocabularyItemCreate,
     VocabularyItemCreateMe,
@@ -100,6 +102,53 @@ def add_item(
         russian_translation=russian_translation,
         source_sentence=source_sentence,
         source_url=source_url,
+    )
+    return AsyncTaskResponse(task_id=task.id)
+
+
+@router.post("/me/from-capture", response_model=AsyncTaskResponse, status_code=202)
+def add_my_item_from_capture(
+    payload: VocabularyFromCaptureRequestMe,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> AsyncTaskResponse:
+    user = users_repository.get_by_id(db, current_user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    from app.tasks.vocabulary_tasks import study_flow_capture_to_vocabulary
+
+    task = study_flow_capture_to_vocabulary.delay(
+        user_id=current_user_id,
+        selected_text=payload.selected_text,
+        source_url=payload.source_url,
+        source_sentence=payload.source_sentence,
+        force_new_vocabulary_item=payload.force_new_vocabulary_item,
+    )
+    return AsyncTaskResponse(task_id=task.id)
+
+
+@router.post("/from-capture", response_model=AsyncTaskResponse, status_code=202)
+def add_item_from_capture(
+    payload: VocabularyFromCaptureRequest,
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> AsyncTaskResponse:
+    target_user_id = payload.user_id or current_user_id
+    if payload.user_id is not None and payload.user_id != current_user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    user = users_repository.get_by_id(db, target_user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    from app.tasks.vocabulary_tasks import study_flow_capture_to_vocabulary
+
+    task = study_flow_capture_to_vocabulary.delay(
+        user_id=target_user_id,
+        selected_text=payload.selected_text,
+        source_url=payload.source_url,
+        source_sentence=payload.source_sentence,
+        force_new_vocabulary_item=payload.force_new_vocabulary_item,
     )
     return AsyncTaskResponse(task_id=task.id)
 

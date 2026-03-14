@@ -195,7 +195,7 @@ async function addToVocabulary() {
 
   try {
     const selection = await requestSelectionFromTab().catch(() => ({ sourceUrl: null }));
-    const result = await requestJson("/study-flow/me/capture-to-vocabulary", {
+    const result = await requestJson("/vocabulary/me/from-capture", {
       method: "POST",
       payload: {
         selected_text: selectedText,
@@ -218,3 +218,4 @@ addBtn.addEventListener("click", addToVocabulary);
 
 loadAuthState();
 refreshSelection();
+

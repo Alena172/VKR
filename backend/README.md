@@ -241,7 +241,7 @@ alembic downgrade -1
 
 ## SRS-аналитика
 
-`GET /api/v1/analytics/review-summary?user_id={user_id}&min_streak=3&min_errors=3` возвращает (есть аналог `/api/v1/analytics/review-summary/me`):
+`GET /api/v1/context/review-summary?user_id={user_id}&min_streak=3&min_errors=3` возвращает (есть аналог `/api/v1/context/me/review-summary`):
 - `total_tracked`: всего слов в SRS-трекинге
 - `due_now`: сколько слов нужно повторять сейчас
 - `mastered`: сколько слов стабилизированы (по текущему порогу streak)
@@ -269,10 +269,21 @@ alembic downgrade -1
 - рекомендации слов из графа
 - режимы: `interest`, `weakness`, `mixed`
 - для каждого слова возвращаются `score`, `reasons`, `topic_cluster`, `mistake_count`
+- дополнительно возвращаются `strategy_sources[]` и `primary_strategy` для UI-объяснимости
+
+`GET /api/v1/learning-graph/me/anchors?english_lemma=obtain&limit=5`:
+- возвращает anchor-узлы (связанные senses) для слова: `english_lemma`, `relation_type`, `score`, `topic_cluster`
+
+`GET /api/v1/learning-graph/me/observability`:
+- продуктовые и технические метрики рекомендаций:
+- `total_requests`, `empty_recommendations_share`, `weak_recommendations_share`
+- `avg_items_per_response`, `avg_top_score`, `avg_mean_score`
+- латентность стратегий (`strategy_latency[]`: avg/p95/max/last)
+- распределение `primary_strategy` (`primary_strategy_distribution[]`)
 
 ## Сквозной orchestration-flow
 
-`POST /api/v1/study-flow/capture-to-vocabulary` выполняет в одном запросе:
+`POST /api/v1/vocabulary/from-capture` выполняет в одном запросе:
 - сохранение `capture` (данные из расширения)
 - перевод выбранного слова через AI
 - добавление в `vocabulary` (с дедупликацией по лемме)
@@ -281,7 +292,7 @@ alembic downgrade -1
 Параметры:
 - `force_new_vocabulary_item`: принудительно создать новую словарную запись даже при дубле
 
-`POST /api/v1/study-flow/me/capture-to-vocabulary`:
+`POST /api/v1/vocabulary/me/from-capture`:
 - тот же orchestration-flow для текущего пользователя из JWT
 - рекомендуется для frontend/extension как основной endpoint
 
@@ -289,7 +300,7 @@ alembic downgrade -1
 
 Расширение браузера использует backend endpoints:
 - `POST /api/v1/translate/me`
-- `POST /api/v1/study-flow/me/capture-to-vocabulary`
+- `POST /api/v1/vocabulary/me/from-capture`
 
 Папка расширения:
 - `../extension`
@@ -304,8 +315,12 @@ alembic downgrade -1
 - learning_session
 - context_memory
 - ai_services
-- analytics
+- learning_graph
+- tasks
 
 Языки зафиксированы бизнес-правилом:
 - Родной язык: русский (RU)
 - Изучаемый язык: английский (EN)
+
+
+

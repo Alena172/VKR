@@ -46,8 +46,8 @@
 │  ├── /sessions/*     — учебные сессии и ответы                              │
 │  ├── /context/*      — контекстная память и SRS                             │
 │  ├── /learning-graph/* — персональный граф обучения                         │
-│  ├── /study-flow/*   — сквозные orchestration-сценарии                      │
-│  ├── /analytics/*    — метрики прогресса                                    │
+│  ├── /vocabulary/*   — словарь + capture→vocabulary orchestration            │
+│  ├── /context/*      — SRS и агрегированные метрики прогресса               │
 │  ├── /ai/*           — диагностика AI-провайдера                            │
 │  └── /tasks/*        — polling статуса фоновых задач                        │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -61,19 +61,19 @@
 │  │    (AI)    │ │  engine    │ │  session   │ │   memory   │               │
 │  └────────────┘ └────────────┘ └────────────┘ └────────────┘               │
 │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐               │
-│  │    ai_     │ │ analytics  │ │  learning  │ │  study_    │               │
+│  │    ai_     │ │ context_   │ │  learning  │ │  study_    │               │
 │  │  services  │ │ (метрики)  │ │   graph    │ │   flow     │               │
 │  └────────────┘ └────────────┘ └────────────┘ └────────────┘               │
-│  ┌────────────┐ ┌────────────┐                                              │
-│  │   tasks    │ │learning_   │                                              │
-│  │ (polling)  │ │   path     │ (empty)                                      │
-│  └────────────┘ └────────────┘                                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  Фоновые задачи (app/tasks/)                                                │
+│  ┌────────────┐ ┌────────────┐                                             │
+│  │   tasks    │ │learning_   │                                             │
+│  │ (polling)  │ │   path     │                                             │
+│  └────────────┘ └────────────┘                                             │
+├────────────────────────────────────────────────────────────────────────────┤
+│  Фоновые задачи (app/tasks/)                                               │
 │  ├── vocabulary_tasks.py — асинхронные операции со словарём                │
-│  └── exercise_tasks.py — генерация упражнений в фоне                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  Celery Worker                                                              │
+│  └── exercise_tasks.py — генерация упражнений в фоне                       │
+├────────────────────────────────────────────────────────────────────────────┤
+│  Celery Worker                                                             │
 │  ├── Broker: Redis (db/0) — очередь задач                                  │
 │  ├── Backend: Redis (db/1) — хранение результатов                          │
 │  └── Concurrency: 4 worker'а                                                │
@@ -336,19 +336,22 @@
 - `PUT /learning-graph/me/interests` — upsert интересов
 - `POST /learning-graph/me/semantic-upsert` — семантическая дедупликация
 - `GET /learning-graph/me/recommendations` — рекомендации (interest|weakness|mixed)
+- `GET /learning-graph/me/anchors` — якорные узлы (соседние senses) по слову
+- `GET /learning-graph/me/observability` — метрики качества и латентности стратегий
 
 **Режимы рекомендаций**:
 - `interest` — слова по интересам пользователя
 - `weakness` — слова с наибольшим количеством ошибок
 - `mixed` — комбинация обоих сигналов
+- для каждого слова API возвращает `strategy_sources[]` и `primary_strategy`
 
 ---
 
-### 10. study_flow (Сквозные сценарии)
-**Ответственность**: Orchestration между модулями для клиентских сценариев
+### 10. Интеграционный поток capture -> vocabulary
+**Ответственность**: Сквозной orchestration через endpoint модуля `vocabulary`
 
 **Эндпоинты**:
-- `POST /study-flow/me/capture-to-vocabulary` — полный цикл:
+- `POST /vocabulary/me/from-capture` — полный цикл:
   1. Сохранение `capture`
   2. Перевод через AI
   3. Добавление в `vocabulary` (с дедупликацией)
@@ -363,11 +366,11 @@
 
 ---
 
-### 11. analytics (Аналитика)
-**Ответственность**: Агрегация метрик прогресса
+### 11. context_memory аналитика
+**Ответственность**: Агрегация метрик SRS-прогресса
 
 **Эндпоинты**:
-- `GET /analytics/review-summary/me` — сводка SRS-состояния:
+- `GET /context/me/review-summary` — сводка SRS-состояния:
   - `total_tracked` — всего слов в трекинге
   - `due_now` — готовы к повторению сейчас
   - `mastered` — стабилизированные слова
@@ -424,16 +427,6 @@
   "error": null
 }
 ```
-
----
-
-### 14. learning_path (Заготовки)
-**Статус**: Пустой модуль (резерв для будущего функционала)
-
-**Потенциальное назначение**:
-- Индивидуальные траектории обучения
-- План изучения тем
-- Прогресс по уровням CEFR
 
 ---
 
@@ -505,7 +498,7 @@
 - `context_memory`
 - `learning_sessions`
 - `learning_session_answers`
-- `analytics` (рассчитывается агрегацией)
+- `context_memory` (включая агрегированные метрики)
 - `learning_graph_*`
 
 ### Временное хранилище (Redis)
@@ -633,7 +626,7 @@ Frontend → GET /auth/me (подтверждение user_id из токена)
 ### 2. Добавление слова из расширения
 ```
 Extension → захват выделения (content.js)
-          → popup.js: POST /study-flow/me/capture-to-vocabulary
+          → popup.js: POST /vocabulary/me/from-capture
           ← {vocabulary_item, word_progress, capture}
 Extension → отображение результата в popup
 ```
@@ -731,7 +724,7 @@ VKR_V3_Curs/
 ├── backend/
 │   ├── app/
 │   │   ├── core/              # config, db, api router
-│   │   ├── modules/           # 14 модулей
+│   │   ├── modules/           # backend-модули (auth, users, vocabulary, ...)
 │   │   ├── tasks/             # Celery tasks
 │   │   ├── main.py            # точка входа FastAPI
 │   │   └── celery_app.py      # Celery application
@@ -772,7 +765,7 @@ VKR_V3_Curs/
 3. **Оффлайн-режим**: Service Worker для frontend
 4. **Мультиязычность**: Поддержка других пар языков
 5. **Голосовые упражнения**: Интеграция с Speech-to-Text API
-6. **Расширение модуля learning_path**: индивидуальные траектории
+6. **Траектории обучения**: выделенный roadmap-сервис при росте продукта
 
 ### Масштабирование
 - **Горизонтальное**: Backend stateless, легко масштабируется
@@ -810,3 +803,7 @@ VKR_V3_Curs/
 - `backend/ARCHITECTURE.md` — архитектурные заметки backend
 - `frontend/README.md` — руководство по запуску frontend
 - `extension/README.md` — документация расширения
+- `docs/learning_flow_information.md` — расширенная диаграмма информационных потоков учебного сценария
+
+
+

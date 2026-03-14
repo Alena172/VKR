@@ -35,6 +35,7 @@ def generate_exercises_for_user(
     from app.modules.ai_services.contracts import ExerciseSeed, GenerateExercisesRequest
     from app.modules.ai_services.service import TranslationProviderUnavailableError, ai_service
     from app.modules.context_memory.repository import context_repository
+    from app.modules.learning_graph.repository import learning_graph_repository
     from app.modules.users.repository import users_repository
     from app.modules.vocabulary.repository import vocabulary_repository
 
@@ -70,14 +71,30 @@ def generate_exercises_for_user(
         context = context_repository.get_by_user_id(db, user_id)
         cefr_level = context.cefr_level if context is not None else user.cefr_level
 
-        seeds = [
-            ExerciseSeed(
+        anchors_used_count = 0
+        seeds: list[ExerciseSeed] = []
+        for item in vocabulary_items:
+            source_sentence = item.source_sentence
+            anchors = learning_graph_repository.list_anchors(
+                db,
+                user_id=user_id,
                 english_lemma=item.english_lemma,
-                russian_translation=item.russian_translation,
-                source_sentence=item.source_sentence,
+                limit=3,
             )
-            for item in vocabulary_items
-        ]
+            if anchors:
+                anchor_words = [anchor.english_lemma for anchor in anchors if anchor.english_lemma]
+                if anchor_words:
+                    anchors_used_count += 1
+                    anchor_hint = "Related known words: " + ", ".join(anchor_words) + "."
+                    source_sentence = f"{source_sentence or ''} {anchor_hint}".strip()
+
+            seeds.append(
+                ExerciseSeed(
+                    english_lemma=item.english_lemma,
+                    russian_translation=item.russian_translation,
+                    source_sentence=source_sentence,
+                )
+            )
         if len(seeds) > 1:
             randomizer = secrets.SystemRandom()
             randomizer.shuffle(seeds)
@@ -119,7 +136,10 @@ def generate_exercises_for_user(
                     }
                     for item in all_exercises[:size]
                 ]
-                return exercises_dicts, f"AI batch generation used (batches={len(batches)})"
+                return (
+                    exercises_dicts,
+                    f"AI batch generation used (batches={len(batches)}; graph_anchors_used={anchors_used_count})",
+                )
             else:
                 try:
                     ai_response = await ai_service.generate_exercises_async(
@@ -137,7 +157,10 @@ def generate_exercises_for_user(
                     }
                     for item in ai_response.exercises
                 ]
-                return exercises_dicts, f"AI generation used ({ai_response.provider_note})"
+                return (
+                    exercises_dicts,
+                    f"AI generation used ({ai_response.provider_note}; graph_anchors_used={anchors_used_count})",
+                )
 
         exercises_dicts, note = asyncio.run(_run_generation())
         return {"exercises": exercises_dicts, "note": note}

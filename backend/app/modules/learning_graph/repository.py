@@ -4,18 +4,28 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Literal
 import re
+from time import perf_counter
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.modules.learning_graph.observability import learning_graph_observability
 from app.modules.learning_graph.models import (
     MistakeEventModel,
+    SenseRelationModel,
     TopicClusterModel,
     UserInterestModel,
     VocabularySenseLinkModel,
     WordSenseModel,
 )
-from app.modules.learning_graph.schemas import InterestItem, RecommendationItem
+from app.modules.context_memory.models import WordProgressModel
+from app.modules.learning_graph.recommender_strategies import (
+    ClusterDeepeningStrategy,
+    NeighborExpansionStrategy,
+    RecommendationStrategy,
+    WeakNodeReinforcementStrategy,
+)
+from app.modules.learning_graph.schemas import InterestItem, RecommendationItem, SenseAnchorItem
 
 
 @dataclass
@@ -46,6 +56,12 @@ class LearningGraphRepository:
         ("lexical.false_friend", {"actual", "fabric", "magazine", "artist"}),
         ("lexical.word_choice", {"choice", "meaning", "context"}),
     ]
+    def __init__(self) -> None:
+        self._strategies: tuple[RecommendationStrategy, ...] = (
+            NeighborExpansionStrategy(),
+            ClusterDeepeningStrategy(),
+            WeakNodeReinforcementStrategy(),
+        )
 
     def _normalize_lemma(self, value: str) -> str:
         raw = (value or "").strip().lower()
@@ -65,6 +81,123 @@ class LearningGraphRepository:
         if not tokens:
             return "generic"
         return "-".join(tokens[:4])[:120]
+
+    def _extract_semantic_tokens(self, value: str | None) -> set[str]:
+        tokens = {token.lower() for token in self._TAG_WORD_RE.findall(value or "")}
+        return {token for token in tokens if len(token) >= 3}
+
+    def _sense_similarity_score(
+        self,
+        *,
+        lemma_a: str,
+        translation_a: str,
+        context_a: str | None,
+        lemma_b: str,
+        translation_b: str,
+        context_b: str | None,
+    ) -> float:
+        tokens_a = self._extract_semantic_tokens(f"{lemma_a} {translation_a} {context_a or ''}")
+        tokens_b = self._extract_semantic_tokens(f"{lemma_b} {translation_b} {context_b or ''}")
+        if not tokens_a or not tokens_b:
+            return 0.0
+        inter = len(tokens_a & tokens_b)
+        if inter == 0:
+            return 0.0
+        union = len(tokens_a | tokens_b)
+        return inter / max(1, union)
+
+    def _pair_ids(self, left_id: int, right_id: int) -> tuple[int, int]:
+        return (left_id, right_id) if left_id < right_id else (right_id, left_id)
+
+    def _upsert_relation(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        left_sense_id: int,
+        right_sense_id: int,
+        relation_type: str,
+        score: float,
+    ) -> None:
+        if left_sense_id == right_sense_id:
+            return
+        left_id, right_id = self._pair_ids(left_sense_id, right_sense_id)
+        existing = db.scalar(
+            select(SenseRelationModel).where(
+                SenseRelationModel.user_id == user_id,
+                SenseRelationModel.left_sense_id == left_id,
+                SenseRelationModel.right_sense_id == right_id,
+            )
+        )
+        if existing is None:
+            db.add(
+                SenseRelationModel(
+                    user_id=user_id,
+                    left_sense_id=left_id,
+                    right_sense_id=right_id,
+                    relation_type=relation_type,
+                    score=round(float(score), 6),
+                )
+            )
+            db.flush()
+            return
+        if score > existing.score:
+            existing.score = round(float(score), 6)
+            existing.relation_type = relation_type
+            db.flush()
+
+    def _sync_relations_for_sense(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        sense: WordSenseModel,
+    ) -> None:
+        candidates = list(
+            db.scalars(
+                select(WordSenseModel).where(
+                    WordSenseModel.user_id == user_id,
+                    WordSenseModel.id != sense.id,
+                )
+            )
+        )
+        for candidate in candidates:
+            relation_type: str | None = None
+            score = 0.0
+
+            if candidate.english_lemma == sense.english_lemma and candidate.semantic_key != sense.semantic_key:
+                relation_type = "polysemy_variant"
+                score = 0.9
+            else:
+                semantic_overlap = self._sense_similarity_score(
+                    lemma_a=sense.english_lemma,
+                    translation_a=sense.russian_translation,
+                    context_a=sense.context_definition_ru or sense.source_sentence,
+                    lemma_b=candidate.english_lemma,
+                    translation_b=candidate.russian_translation,
+                    context_b=candidate.context_definition_ru or candidate.source_sentence,
+                )
+                if semantic_overlap >= 0.2:
+                    relation_type = "semantic_overlap"
+                    score = semantic_overlap
+                elif (
+                    sense.topic_cluster_id is not None
+                    and candidate.topic_cluster_id is not None
+                    and sense.topic_cluster_id == candidate.topic_cluster_id
+                ):
+                    relation_type = "topic_cluster"
+                    score = 0.35
+
+            if relation_type is None:
+                continue
+            self._upsert_relation(
+                db,
+                user_id=user_id,
+                left_sense_id=sense.id,
+                right_sense_id=candidate.id,
+                relation_type=relation_type,
+                score=score,
+            )
 
     def _suggest_cluster_key(
         self,
@@ -101,6 +234,23 @@ class LearningGraphRepository:
             "it": "IT & Tech",
         }
         return names.get(cluster_key, cluster_key.replace("-", " ").title())
+
+    def _get_known_lemmas(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        min_streak: int = 2,
+        max_errors: int = 1,
+    ) -> set[str]:
+        rows = db.scalars(
+            select(WordProgressModel).where(
+                WordProgressModel.user_id == user_id,
+                WordProgressModel.correct_streak >= min_streak,
+                WordProgressModel.error_count <= max_errors,
+            )
+        )
+        return {row.word.strip().lower() for row in rows if row.word}
 
     def list_interests(self, db: Session, user_id: int) -> list[InterestItem]:
         stmt = (
@@ -172,7 +322,9 @@ class LearningGraphRepository:
         if not lemma or not translation:
             raise ValueError("english_lemma and russian_translation are required")
 
-        semantic_key = self._normalize_semantic_key(translation)
+        semantic_key = self._normalize_semantic_key(
+            f"{translation} {source_sentence or ''} {context_definition_ru or ''}"
+        )
         interest_keys = {
             row.interest_key
             for row in db.scalars(
@@ -241,6 +393,12 @@ class LearningGraphRepository:
                 )
             )
             db.flush()
+
+        self._sync_relations_for_sense(
+            db,
+            user_id=user_id,
+            sense=sense,
+        )
 
         return SemanticUpsertResult(
             sense=sense,
@@ -329,7 +487,13 @@ class LearningGraphRepository:
             )
             or 0
         )
-        graph_edges_count = links_count + mistakes_count
+        relations_count = int(
+            db.scalar(
+                select(func.count(SenseRelationModel.id)).where(SenseRelationModel.user_id == user_id)
+            )
+            or 0
+        )
+        graph_edges_count = links_count + mistakes_count + relations_count
 
         top_interests_rows = list(
             db.execute(
@@ -391,6 +555,11 @@ class LearningGraphRepository:
             )
         )
         if not senses:
+            learning_graph_observability.record_recommendation_call(
+                user_id=user_id,
+                items=[],
+                strategy_latencies_ms={},
+            )
             return []
 
         clusters = {
@@ -403,9 +572,6 @@ class LearningGraphRepository:
             )
         )
         interest_keys = {item.interest_key: item.weight for item in interests}
-        interest_tokens = set()
-        for key in interest_keys:
-            interest_tokens.update(key.split("-"))
 
         mistake_counter = Counter(
             row[0]
@@ -415,55 +581,243 @@ class LearningGraphRepository:
             )
             if row[0]
         )
+        known_lemmas = self._get_known_lemmas(db, user_id=user_id)
+        senses_by_id = {sense.id: sense for sense in senses}
+        relations = list(
+            db.scalars(select(SenseRelationModel).where(SenseRelationModel.user_id == user_id))
+        )
+        adjacency: dict[int, list[tuple[int, SenseRelationModel]]] = {}
+        for relation in relations:
+            adjacency.setdefault(relation.left_sense_id, []).append((relation.right_sense_id, relation))
+            adjacency.setdefault(relation.right_sense_id, []).append((relation.left_sense_id, relation))
 
-        best_by_lemma: dict[str, RecommendationItem] = {}
+        known_sense_ids = {
+            sense.id for sense in senses if sense.english_lemma.strip().lower() in known_lemmas
+        }
+        mistake_source_ids = {
+            sense.id for sense in senses if int(mistake_counter.get(sense.english_lemma.strip().lower(), 0)) > 0
+        }
+        weak_source_ids = known_sense_ids or mistake_source_ids
+
+        strategy_signals: dict[str, dict[str, float]] = {}
+        strategy_latencies_ms: dict[str, float] = {}
+        for strategy in self._strategies:
+            started_at = perf_counter()
+            strategy_signals[strategy.name] = strategy.compute(
+                senses=senses,
+                clusters=clusters,
+                interest_keys=interest_keys,
+                known_lemmas=known_lemmas,
+                known_sense_ids=known_sense_ids,
+                source_sense_ids=weak_source_ids,
+                senses_by_id=senses_by_id,
+                adjacency=adjacency,
+                mistake_counter=mistake_counter,
+            )
+            strategy_latencies_ms[strategy.name] = (perf_counter() - started_at) * 1000.0
+
+        strategy_weights_by_mode: dict[str, dict[str, float]] = {
+            "interest": {
+                "ClusterDeepening": 1.0,
+                "NeighborExpansion": 0.7,
+                "WeakNodeReinforcement": 0.2,
+            },
+            "weakness": {
+                "ClusterDeepening": 0.2,
+                "NeighborExpansion": 0.6,
+                "WeakNodeReinforcement": 1.0,
+            },
+            "mixed": {
+                "ClusterDeepening": 0.8,
+                "NeighborExpansion": 0.8,
+                "WeakNodeReinforcement": 1.0,
+            },
+        }
+        strategy_weights = strategy_weights_by_mode.get(mode, strategy_weights_by_mode["mixed"])
+
+        primary_sense_by_lemma: dict[str, WordSenseModel] = {}
         for sense in senses:
+            lemma = sense.english_lemma.strip().lower()
+            if not lemma:
+                continue
+            if lemma not in primary_sense_by_lemma:
+                primary_sense_by_lemma[lemma] = sense
+
+        weighted_scores: dict[str, float] = {}
+        per_strategy_weighted: dict[str, dict[str, float]] = {
+            strategy.name: {} for strategy in self._strategies
+        }
+        reasons_by_lemma: dict[str, set[str]] = {}
+        strategy_sources_by_lemma: dict[str, set[str]] = {}
+
+        for strategy_name, signal in strategy_signals.items():
+            weight = strategy_weights.get(strategy_name, 0.0)
+            if weight <= 0:
+                continue
+            for lemma, raw_score in signal.items():
+                weighted = raw_score * weight
+                if weighted <= 0:
+                    continue
+                weighted_scores[lemma] = weighted_scores.get(lemma, 0.0) + weighted
+                per_strategy_weighted[strategy_name][lemma] = weighted
+                strategy_sources_by_lemma.setdefault(lemma, set()).add(strategy_name)
+
+        for lemma in list(weighted_scores.keys()):
+            mistakes = int(mistake_counter.get(lemma, 0))
+            if mistakes > 0 and mode in {"weakness", "mixed"}:
+                weighted_scores[lemma] += min(2.0, 0.6 * mistakes)
+                reasons_by_lemma.setdefault(lemma, set()).add("mistake_history")
+            if lemma in known_lemmas:
+                weighted_scores[lemma] *= 0.35
+                reasons_by_lemma.setdefault(lemma, set()).add("already_known_penalty")
+            if mode == "mixed":
+                sources = strategy_sources_by_lemma.get(lemma, set())
+                if "ClusterDeepening" in sources and "WeakNodeReinforcement" in sources:
+                    weighted_scores[lemma] += 0.5
+                    reasons_by_lemma.setdefault(lemma, set()).add("combined_signal")
+
+        items: list[RecommendationItem] = []
+        for lemma, total_score in weighted_scores.items():
+            if total_score <= 0:
+                continue
+            sense = primary_sense_by_lemma.get(lemma)
+            if sense is None:
+                continue
             cluster = clusters.get(sense.topic_cluster_id) if sense.topic_cluster_id else None
-            cluster_key = cluster.cluster_key if cluster is not None else ""
-            score = 0.0
-            reasons: list[str] = []
-            mistake_count = int(mistake_counter.get(sense.english_lemma, 0))
-
-            if mode in {"interest", "mixed"}:
-                interest_score = 0.0
-                if cluster_key in interest_keys:
-                    interest_score += 2.5 * interest_keys[cluster_key]
-                if cluster_key and any(token in cluster_key for token in interest_tokens):
-                    interest_score += 0.8
-                if interest_score > 0:
-                    score += interest_score
-                    reasons.append("interest_match")
-
-            if mode in {"weakness", "mixed"} and mistake_count > 0:
-                weakness_score = min(8.0, 1.3 * mistake_count)
-                score += weakness_score
-                reasons.append("mistake_history")
-
-            if mode == "mixed" and score > 0 and cluster_key in interest_keys and mistake_count > 0:
-                score += 0.8
-                reasons.append("combined_signal")
-
-            if score <= 0:
+            strategy_sources = sorted(strategy_sources_by_lemma.get(lemma, set()))
+            if not strategy_sources:
                 continue
 
-            item = RecommendationItem(
-                english_lemma=sense.english_lemma,
-                russian_translation=sense.russian_translation,
-                topic_cluster=cluster.name if cluster is not None else None,
-                score=round(score, 4),
-                reasons=reasons,
-                mistake_count=mistake_count,
+            primary_strategy = max(
+                strategy_sources,
+                key=lambda name: per_strategy_weighted.get(name, {}).get(lemma, 0.0),
             )
-            existing = best_by_lemma.get(item.english_lemma)
-            if existing is None or item.score > existing.score:
-                best_by_lemma[item.english_lemma] = item
+            reasons = list(reasons_by_lemma.get(lemma, set()))
+            reasons.extend(
+                [
+                    {
+                        "NeighborExpansion": "neighbor_expansion",
+                        "ClusterDeepening": "interest_match",
+                        "WeakNodeReinforcement": "semantic_neighbor",
+                    }[strategy]
+                    for strategy in strategy_sources
+                ]
+            )
+            # Preserve order while deduping
+            seen: set[str] = set()
+            reasons_unique: list[str] = []
+            for reason in reasons:
+                if reason in seen:
+                    continue
+                seen.add(reason)
+                reasons_unique.append(reason)
 
-        ranked = sorted(
-            best_by_lemma.values(),
-            key=lambda row: (row.score, row.mistake_count, row.english_lemma),
-            reverse=True,
+            items.append(
+                RecommendationItem(
+                    english_lemma=lemma,
+                    russian_translation=sense.russian_translation,
+                    topic_cluster=cluster.name if cluster is not None else None,
+                    score=round(float(total_score), 4),
+                    reasons=reasons_unique,
+                    strategy_sources=strategy_sources,
+                    primary_strategy=primary_strategy,
+                    mistake_count=int(mistake_counter.get(lemma, 0)),
+                )
+            )
+
+        items.sort(key=lambda row: (row.score, row.mistake_count, row.english_lemma), reverse=True)
+        limited = items[:limit]
+        learning_graph_observability.record_recommendation_call(
+            user_id=user_id,
+            items=limited,
+            strategy_latencies_ms=strategy_latencies_ms,
         )
-        return ranked[:limit]
+        return limited
+
+    def list_anchors(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        english_lemma: str,
+        limit: int,
+    ) -> list[SenseAnchorItem]:
+        lemma = self._normalize_lemma(english_lemma)
+        if not lemma:
+            return []
+
+        source_sense = db.scalar(
+            select(WordSenseModel)
+            .where(
+                WordSenseModel.user_id == user_id,
+                WordSenseModel.english_lemma == lemma,
+            )
+            .order_by(WordSenseModel.id.desc())
+        )
+        if source_sense is None:
+            return []
+
+        relations = list(
+            db.scalars(
+                select(SenseRelationModel).where(
+                    SenseRelationModel.user_id == user_id,
+                    or_(
+                        SenseRelationModel.left_sense_id == source_sense.id,
+                        SenseRelationModel.right_sense_id == source_sense.id,
+                    ),
+                )
+            )
+        )
+        if not relations:
+            return []
+
+        neighbor_ids: set[int] = set()
+        for relation in relations:
+            if relation.left_sense_id == source_sense.id:
+                neighbor_ids.add(relation.right_sense_id)
+            else:
+                neighbor_ids.add(relation.left_sense_id)
+        neighbors = {
+            row.id: row
+            for row in db.scalars(
+                select(WordSenseModel).where(
+                    WordSenseModel.user_id == user_id,
+                    WordSenseModel.id.in_(neighbor_ids),
+                )
+            )
+        }
+        clusters = {
+            row.id: row.name
+            for row in db.scalars(
+                select(TopicClusterModel).where(TopicClusterModel.user_id == user_id)
+            )
+        }
+
+        anchors: list[SenseAnchorItem] = []
+        for relation in relations:
+            neighbor_id = (
+                relation.right_sense_id if relation.left_sense_id == source_sense.id else relation.left_sense_id
+            )
+            neighbor = neighbors.get(neighbor_id)
+            if neighbor is None:
+                continue
+            anchors.append(
+                SenseAnchorItem(
+                    word_sense_id=neighbor.id,
+                    english_lemma=neighbor.english_lemma,
+                    russian_translation=neighbor.russian_translation,
+                    semantic_key=neighbor.semantic_key,
+                    relation_type=relation.relation_type,
+                    score=round(relation.score, 4),
+                    topic_cluster=clusters.get(neighbor.topic_cluster_id) if neighbor.topic_cluster_id else None,
+                )
+            )
+
+        anchors.sort(key=lambda row: (row.score, row.word_sense_id), reverse=True)
+        return anchors[:limit]
+
+    def get_observability(self, *, user_id: int) -> dict[str, object]:
+        return learning_graph_observability.get_snapshot(user_id)
 
 
 learning_graph_repository = LearningGraphRepository()

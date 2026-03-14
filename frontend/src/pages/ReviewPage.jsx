@@ -2,10 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 
 const FLIP_ANIMATION_MS = 520;
+const STRATEGY_LABELS = {
+  NeighborExpansion: "Соседние связи",
+  ClusterDeepening: "Углубление кластера",
+  WeakNodeReinforcement: "Усиление слабых узлов",
+};
 
 export default function ReviewPage({ onError }) {
   const [plan, setPlan] = useState(null);
   const [summary, setSummary] = useState(null);
+  const [graphRecommendations, setGraphRecommendations] = useState([]);
+  const [graphAnchorsByLemma, setGraphAnchorsByLemma] = useState({});
 
   const [sessionSize, setSessionSize] = useState(20);
   const [sessionMode, setSessionMode] = useState(null); // "srs" | "random" | null
@@ -20,9 +27,32 @@ export default function ReviewPage({ onError }) {
 
   async function loadReviewMeta() {
     try {
-      const [planData, summaryData] = await Promise.all([api.reviewPlan(10), api.reviewSummary()]);
+      const [planData, summaryData, graphData] = await Promise.all([
+        api.reviewPlan(10),
+        api.reviewSummary(),
+        api.learningGraphRecommendations("mixed", 5),
+      ]);
       setPlan(planData);
       setSummary(summaryData);
+      const items = graphData?.items || [];
+      setGraphRecommendations(items);
+
+      const topForAnchors = items.slice(0, 3);
+      if (!topForAnchors.length) {
+        setGraphAnchorsByLemma({});
+        return;
+      }
+      const anchorResults = await Promise.allSettled(
+        topForAnchors.map((item) => api.learningGraphAnchors(item.english_lemma, 3)),
+      );
+      const anchorsMap = {};
+      topForAnchors.forEach((item, index) => {
+        const result = anchorResults[index];
+        if (result.status === "fulfilled") {
+          anchorsMap[item.english_lemma] = result.value?.anchors || [];
+        }
+      });
+      setGraphAnchorsByLemma(anchorsMap);
     } catch (error) {
       onError(error.message);
     }
@@ -158,6 +188,33 @@ export default function ReviewPage({ onError }) {
               <p className="text-sm text-gray-600">
                 План: к повторению сейчас — {plan.due_count}, запланировано на ближайшее время — {plan.upcoming_count}. Рекомендуемые слова: {plan.recommended_words.join(", ") || "-"}
               </p>
+            ) : null}
+            {graphRecommendations.length ? (
+              <div className="space-y-2 rounded-xl border border-blue-100 bg-blue-50/50 p-3">
+                <p className="text-sm font-semibold text-gray-900">Рекомендации из learning graph</p>
+                <div className="space-y-2">
+                  {graphRecommendations.map((item) => {
+                    const strategyLabel =
+                      STRATEGY_LABELS[item.primary_strategy] || item.primary_strategy || "Без стратегии";
+                    const anchors = graphAnchorsByLemma[item.english_lemma] || [];
+                    return (
+                      <div key={`graph-rec-${item.english_lemma}`} className="rounded-lg border border-blue-100 bg-white p-2">
+                        <p className="text-sm font-semibold text-gray-900">
+                          {item.english_lemma} - {item.russian_translation}
+                        </p>
+                        <p className="mt-1 text-xs text-gray-600">
+                          Strategy source: <span className="font-semibold text-blue-700">{strategyLabel}</span>
+                        </p>
+                        {anchors.length ? (
+                          <p className="mt-1 text-xs text-gray-600">
+                            Anchors: {anchors.map((anchor) => `${anchor.english_lemma} (${anchor.russian_translation})`).join(", ")}
+                          </p>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             ) : null}
           </section>
         </>

@@ -101,7 +101,7 @@ def test_user_vocabulary_sessions_flow(client):
     assert len(queue_data["items"]) >= 1
     assert queue_data["items"][0]["word"] == "pear"
 
-    analytics_resp = client.get(f"/api/v1/analytics/progress?user_id={user_id}", headers=headers)
+    analytics_resp = client.get(f"/api/v1/context/progress?user_id={user_id}", headers=headers)
     assert analytics_resp.status_code == 200
     payload = analytics_resp.json()
     assert payload["total_sessions"] == 1
@@ -359,7 +359,7 @@ def test_study_flow_capture_to_vocabulary_orchestrates_modules(client):
     headers = auth_headers(client, "flow@example.com")
 
     flow_resp = client.post(
-        "/api/v1/study-flow/capture-to-vocabulary",
+        "/api/v1/vocabulary/from-capture",
         json={
             "user_id": user_id,
             "selected_text": "Apple",
@@ -377,7 +377,7 @@ def test_study_flow_capture_to_vocabulary_orchestrates_modules(client):
 
     # Second call should reuse existing vocabulary item by default.
     flow_resp_repeat = client.post(
-        "/api/v1/study-flow/capture-to-vocabulary",
+        "/api/v1/vocabulary/from-capture",
         json={
             "user_id": user_id,
             "selected_text": "apple",
@@ -391,7 +391,7 @@ def test_study_flow_capture_to_vocabulary_orchestrates_modules(client):
 
     # Force mode should create a new vocabulary item.
     flow_resp_forced = client.post(
-        "/api/v1/study-flow/capture-to-vocabulary",
+        "/api/v1/vocabulary/from-capture",
         json={
             "user_id": user_id,
             "selected_text": "apple",
@@ -467,6 +467,56 @@ def test_recommendations_rank_by_frequency_and_recency(client):
     assert set(data["scores"].keys()) == set(data["words"])
     assert data["scores"]["pear"] > data["scores"]["through"]
     assert data["next_review_at"]["pear"] is not None
+
+
+def test_context_recommendations_include_learning_graph_neighbors(client):
+    create_user(client, "context-graph@example.com", "Context Graph User", "B1")
+    headers = auth_headers(client, "context-graph@example.com")
+
+    upsert_acquire = client.post(
+        "/api/v1/learning-graph/me/semantic-upsert",
+        json={
+            "english_lemma": "acquire",
+            "russian_translation": "получать",
+            "source_sentence": "People acquire practical skills through projects.",
+        },
+        headers=headers,
+    )
+    assert upsert_acquire.status_code == 200
+
+    upsert_obtain = client.post(
+        "/api/v1/learning-graph/me/semantic-upsert",
+        json={
+            "english_lemma": "obtain",
+            "russian_translation": "получать",
+            "source_sentence": "Students obtain practical skills from exercises.",
+        },
+        headers=headers,
+    )
+    assert upsert_obtain.status_code == 200
+
+    mistake_session = client.post(
+        "/api/v1/sessions/submit",
+        json={
+            "answers": [
+                {
+                    "exercise_id": 1,
+                    "prompt": "Translate into Russian: acquire",
+                    "expected_answer": "получать",
+                    "user_answer": "брать",
+                    "is_correct": False,
+                }
+            ]
+        },
+        headers=headers,
+    )
+    assert mistake_session.status_code == 200
+
+    rec_resp = client.get("/api/v1/context/me/recommendations?limit=10", headers=headers)
+    assert rec_resp.status_code == 200
+    words = rec_resp.json()["words"]
+    assert "acquire" in words
+    assert "obtain" in words
 
 
 def test_srs_next_review_moves_forward_after_correct_answer(client):
@@ -772,7 +822,7 @@ def test_review_queue_bulk_submit_updates_multiple_words(client):
     assert empty_bulk.status_code == 200
     assert empty_bulk.json()["updated"] == []
 
-    review_summary = client.get(f"/api/v1/analytics/review-summary?user_id={user_id}", headers=headers)
+    review_summary = client.get(f"/api/v1/context/review-summary?user_id={user_id}", headers=headers)
     assert review_summary.status_code == 200
     summary_data = review_summary.json()
     assert summary_data["user_id"] == user_id
@@ -782,7 +832,7 @@ def test_review_queue_bulk_submit_updates_multiple_words(client):
     assert summary_data["troubled"] >= 0
 
     review_summary_strict = client.get(
-        f"/api/v1/analytics/review-summary?user_id={user_id}&min_streak=5&min_errors=5",
+        f"/api/v1/context/review-summary?user_id={user_id}&min_streak=5&min_errors=5",
         headers=headers,
     )
     assert review_summary_strict.status_code == 200
@@ -933,7 +983,7 @@ def test_returns_403_for_user_id_mismatch_on_user_bound_endpoints(client):
     assert review_bulk_resp.status_code == 403
 
     review_summary_resp = client.get(
-        "/api/v1/analytics/review-summary?user_id=999",
+        "/api/v1/context/review-summary?user_id=999",
         headers=headers,
     )
     assert review_summary_resp.status_code == 403
@@ -948,7 +998,7 @@ def test_returns_403_for_user_id_mismatch_on_user_bound_endpoints(client):
     assert delete_word_progress_resp.status_code == 403
 
     flow_resp = client.post(
-        "/api/v1/study-flow/capture-to-vocabulary",
+        "/api/v1/vocabulary/from-capture",
         json={"user_id": 999, "selected_text": "apple"},
         headers=headers,
     )
@@ -985,12 +1035,12 @@ def test_me_endpoints_work_for_review_and_analytics(client):
     assert plan_data["user_id"] >= 1
     assert isinstance(plan_data["recommended_words"], list)
 
-    summary_resp = client.get("/api/v1/analytics/review-summary/me", headers=headers)
+    summary_resp = client.get("/api/v1/context/me/review-summary", headers=headers)
     assert summary_resp.status_code == 200
     summary_data = summary_resp.json()
     assert summary_data["total_tracked"] >= 1
 
-    progress_resp = client.get("/api/v1/analytics/progress/me", headers=headers)
+    progress_resp = client.get("/api/v1/context/me/progress", headers=headers)
     assert progress_resp.status_code == 200
     progress_data = progress_resp.json()
     assert "avg_accuracy" in progress_data
@@ -1044,7 +1094,7 @@ def test_endpoints_accept_token_user_without_user_id_in_payload(client):
     assert len(answers_resp.json()) == 1
 
     flow_resp = client.post(
-        "/api/v1/study-flow/capture-to-vocabulary",
+        "/api/v1/vocabulary/from-capture",
         json={"selected_text": "Apple", "source_sentence": "I eat an apple"},
         headers=headers,
     )
@@ -1169,7 +1219,7 @@ def test_capture_and_study_flow_me_endpoints_are_user_scoped(client):
     assert "apple" not in words_2
 
     flow_1 = client.post(
-        "/api/v1/study-flow/me/capture-to-vocabulary",
+        "/api/v1/vocabulary/me/from-capture",
         json={"selected_text": "through", "source_sentence": "walk through the park"},
         headers=headers_1,
     )
@@ -1177,7 +1227,7 @@ def test_capture_and_study_flow_me_endpoints_are_user_scoped(client):
     assert flow_1.json()["vocabulary"]["english_lemma"] == "through"
 
     flow_2 = client.post(
-        "/api/v1/study-flow/me/capture-to-vocabulary",
+        "/api/v1/vocabulary/me/from-capture",
         json={"selected_text": "apple", "source_sentence": "I eat an apple"},
         headers=headers_2,
     )
@@ -1197,9 +1247,9 @@ def test_me_endpoints_require_auth_token(client):
         client.get("/api/v1/sessions/me/1/answers"),
         client.get("/api/v1/context/me"),
         client.get("/api/v1/context/me/review-queue"),
-        client.get("/api/v1/analytics/progress/me"),
-        client.get("/api/v1/analytics/review-summary/me"),
-        client.post("/api/v1/study-flow/me/capture-to-vocabulary", json={"selected_text": "apple"}),
+        client.get("/api/v1/context/me/progress"),
+        client.get("/api/v1/context/me/review-summary"),
+        client.post("/api/v1/vocabulary/me/from-capture", json={"selected_text": "apple"}),
     ]
     assert all(resp.status_code == 401 for resp in no_auth_calls)
 
@@ -1357,3 +1407,163 @@ def test_sessions_me_supports_filters_and_pagination(client):
 
     invalid_accuracy = client.get("/api/v1/sessions/me?min_accuracy=0.8&max_accuracy=0.2", headers=headers)
     assert invalid_accuracy.status_code == 400
+
+
+def test_learning_graph_keeps_polysemy_and_exposes_anchors(client):
+    create_user(client, "polysemy@example.com", "Polysemy User", "B1")
+    headers = auth_headers(client, "polysemy@example.com")
+
+    first = client.post(
+        "/api/v1/learning-graph/me/semantic-upsert",
+        json={
+            "english_lemma": "bank",
+            "russian_translation": "банк",
+            "source_sentence": "The central bank raised rates yesterday.",
+        },
+        headers=headers,
+    )
+    assert first.status_code == 200
+    assert first.json()["created_new_sense"] is True
+
+    second = client.post(
+        "/api/v1/learning-graph/me/semantic-upsert",
+        json={
+            "english_lemma": "bank",
+            "russian_translation": "берег",
+            "source_sentence": "We had a picnic on the river bank.",
+        },
+        headers=headers,
+    )
+    assert second.status_code == 200
+    assert second.json()["created_new_sense"] is True
+    assert second.json()["sense"]["id"] != first.json()["sense"]["id"]
+
+    anchors = client.get("/api/v1/learning-graph/me/anchors?english_lemma=bank&limit=5", headers=headers)
+    assert anchors.status_code == 200
+    anchors_payload = anchors.json()
+    assert anchors_payload["english_lemma"] == "bank"
+    assert any(item["relation_type"] == "polysemy_variant" for item in anchors_payload["anchors"])
+
+
+def test_learning_graph_uses_semantic_edges_in_recommendations(client):
+    create_user(client, "graph-reco@example.com", "Graph Reco User", "B1")
+    headers = auth_headers(client, "graph-reco@example.com")
+
+    first = client.post(
+        "/api/v1/learning-graph/me/semantic-upsert",
+        json={
+            "english_lemma": "acquire",
+            "russian_translation": "получать",
+            "source_sentence": "We acquire new skills to get better jobs.",
+        },
+        headers=headers,
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/v1/learning-graph/me/semantic-upsert",
+        json={
+            "english_lemma": "obtain",
+            "russian_translation": "получать",
+            "source_sentence": "Students obtain new skills and get better results.",
+        },
+        headers=headers,
+    )
+    assert second.status_code == 200
+
+    anchors = client.get("/api/v1/learning-graph/me/anchors?english_lemma=obtain&limit=5", headers=headers)
+    assert anchors.status_code == 200
+    anchor_words = [item["english_lemma"] for item in anchors.json()["anchors"]]
+    assert "acquire" in anchor_words
+
+    mistake = client.post(
+        "/api/v1/sessions/submit",
+        json={
+            "answers": [
+                {
+                    "exercise_id": 1,
+                    "prompt": "Translate into Russian: acquire",
+                    "expected_answer": "получать",
+                    "user_answer": "брать",
+                    "is_correct": False,
+                }
+            ]
+        },
+        headers=headers,
+    )
+    assert mistake.status_code == 200
+
+    recommendations = client.get(
+        "/api/v1/learning-graph/me/recommendations?mode=weakness&limit=10",
+        headers=headers,
+    )
+    assert recommendations.status_code == 200
+    items = recommendations.json()["items"]
+    obtain_item = next((item for item in items if item["english_lemma"] == "obtain"), None)
+    assert obtain_item is not None
+    assert "semantic_neighbor" in obtain_item["reasons"]
+    assert "WeakNodeReinforcement" in obtain_item["strategy_sources"]
+    assert obtain_item["primary_strategy"] in {
+        "NeighborExpansion",
+        "ClusterDeepening",
+        "WeakNodeReinforcement",
+    }
+
+
+def test_learning_graph_observability_collects_metrics(client):
+    create_user(client, "graph-observability@example.com", "Graph Observability", "B1")
+    headers = auth_headers(client, "graph-observability@example.com")
+
+    first = client.post(
+        "/api/v1/learning-graph/me/semantic-upsert",
+        json={
+            "english_lemma": "acquire",
+            "russian_translation": "получать",
+            "source_sentence": "Teams acquire knowledge by solving real tasks.",
+        },
+        headers=headers,
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/v1/learning-graph/me/semantic-upsert",
+        json={
+            "english_lemma": "obtain",
+            "russian_translation": "получать",
+            "source_sentence": "Students obtain knowledge from practice.",
+        },
+        headers=headers,
+    )
+    assert second.status_code == 200
+
+    client.get("/api/v1/learning-graph/me/recommendations?mode=mixed&limit=10", headers=headers)
+    client.get("/api/v1/learning-graph/me/recommendations?mode=weakness&limit=10", headers=headers)
+
+    snapshot = client.get("/api/v1/learning-graph/me/observability", headers=headers)
+    assert snapshot.status_code == 200
+    payload = snapshot.json()
+    assert payload["total_requests"] >= 2
+    assert isinstance(payload["strategy_latency"], list)
+    assert len(payload["strategy_latency"]) >= 1
+    assert 0 <= payload["empty_recommendations_share"] <= 1
+    assert 0 <= payload["weak_recommendations_share"] <= 1
+
+
+def test_learning_graph_observability_tracks_empty_recommendations(client):
+    create_user(client, "graph-empty-observability@example.com", "Graph Empty", "A2")
+    headers = auth_headers(client, "graph-empty-observability@example.com")
+
+    recommendations = client.get(
+        "/api/v1/learning-graph/me/recommendations?mode=mixed&limit=10",
+        headers=headers,
+    )
+    assert recommendations.status_code == 200
+    assert recommendations.json()["items"] == []
+
+    snapshot = client.get("/api/v1/learning-graph/me/observability", headers=headers)
+    assert snapshot.status_code == 200
+    payload = snapshot.json()
+    assert payload["total_requests"] >= 1
+    assert payload["empty_recommendations_share"] > 0
+
+

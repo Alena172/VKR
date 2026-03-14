@@ -14,13 +14,12 @@
 - vocabulary: английская лемма, русский перевод и контекст источника
 - capture: прием данных из браузерного расширения
 - translation: контекстный перевод EN->RU
-- study_flow: сквозные orchestration-сценарии между модулями
 - exercise_engine: генерация учебных заданий
 - learning_session: отправка ответов, AI-обратная связь по ошибкам и результаты сессии
-- context_memory: уровень CEFR, цели, сложные слова и учебные сигналы
+- context_memory: SRS-логика, очередь повторения, review-plan/review-summary
 - ai_services: фасад AI/ML-инференса
-- analytics: метрики прогресса
 - learning_graph: персональный граф обучения (интересы, semantic senses, кластеры, ошибки)
+- tasks: polling статуса фоновых задач Celery
 
 ## Правила интеграции
 - Модули взаимодействуют через явные сервисные интерфейсы или API-контракты.
@@ -38,7 +37,7 @@
 - context_memory
 - learning_sessions
 - learning_session_answers
-- analytics (рассчитывается на основе learning_sessions)
+- learning_graph_* (interests, topic_clusters, word_senses, relations, mistake_events, links)
 
 AI-сценарии (текущий локальный stub-провайдер):
 - translation
@@ -70,14 +69,17 @@ AI-сценарии (текущий локальный stub-провайдер):
 - `context/{user_id}/word-progress` также поддерживает серверную сортировку (`sort_by`, `sort_order`)
 - пороги для `mastered/troubled` задаются через query-параметры (`min_streak`, `min_errors`)
 - `context/{user_id}/review-plan` отдает единый ответ для экрана повторения с настраиваемым горизонтом (due/upcoming/recommended)
-- `analytics/review-summary` агрегирует состояние SRS (due/mastered/troubled) для дашборда
-- `study-flow/capture-to-vocabulary` объединяет capture/translation/vocabulary/SRS-init в одном endpoint
-- `study-flow/capture-to-vocabulary` также синхронизирует `learning_graph.word_senses` и связь с `vocabulary_items`
+- `context/review-summary` агрегирует состояние SRS (due/mastered/troubled) для дашборда
+- `vocabulary/from-capture` объединяет capture/translation/vocabulary/SRS-init в одном endpoint
+- `vocabulary/from-capture` также синхронизирует `learning_graph.word_senses` и связь с `vocabulary_items`
 - `learning_graph/me/interests` позволяет управлять интересами пользователя как сигналом рекомендаций
 - `learning_graph/me/semantic-upsert` обеспечивает семантическую дедупликацию (lemma + semantic_key)
 - `learning_graph/me/recommendations` отдает рекомендации в режимах `interest|weakness|mixed`
+- `learning_graph/me/recommendations` возвращает `strategy_sources[]` и `primary_strategy` для explainability в UI
+- `learning_graph/me/anchors` возвращает anchor-узлы для конкретной леммы (связи/веса/типы)
+- `learning_graph/me/observability` возвращает quality-метрики выдачи и латентности стратегий
 - `learning_graph/me/overview` дает агрегированную картину графа (узлы/ребра/топ-кластеры/теги ошибок)
-- `study-flow/me/capture-to-vocabulary` и `capture/me` дают тот же сценарий через user-scoped JWT-маршруты
+- `vocabulary/me/from-capture` и `capture/me` дают тот же сценарий через user-scoped JWT-маршруты
 - `translate/me` и `exercises/me/generate` фиксируют AI-сценарии без явного `user_id` в клиентских payload
 - `auth/token`, `auth/verify` и `auth/me` закрывают JWT-аутентификацию и идентификацию пользователя
 - браузерное расширение работает как внешний клиент к `translate` и `study-flow`
@@ -85,3 +87,6 @@ AI-сценарии (текущий локальный stub-провайдер):
 ## Стратегия миграций
 - Схема БД управляется через Alembic.
 - Начальная миграция: `alembic/versions/0001_initial_schema.py`.
+
+
+

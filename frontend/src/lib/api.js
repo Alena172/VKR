@@ -88,7 +88,7 @@ export const api = {
 
   /** Returns { task_id, status, message } — use pollTask(task_id) to wait for the result. */
   studyFlowCaptureToVocabularyMe: (payload) =>
-    request("/study-flow/me/capture-to-vocabulary", { method: "POST", body: JSON.stringify(payload) }),
+    request("/vocabulary/me/from-capture", { method: "POST", body: JSON.stringify(payload) }),
 
   reviewQueue: (limit = 20) => request(`/context/me/review-queue?limit=${limit}`),
   reviewStartSession: (payload) =>
@@ -98,7 +98,12 @@ export const api = {
 
   reviewPlan: (limit = 10) => request(`/context/me/review-plan?limit=${limit}&horizon_hours=24`),
   cleanupContextGarbage: () => request("/context/me/cleanup-garbage", { method: "POST" }),
-  reviewSummary: () => request("/analytics/review-summary/me"),
+  reviewSummary: () => request("/context/me/review-summary"),
+  learningGraphRecommendations: (mode = "mixed", limit = 10) =>
+    request(`/learning-graph/me/recommendations?mode=${encodeURIComponent(mode)}&limit=${limit}`),
+  learningGraphAnchors: (englishLemma, limit = 5) =>
+    request(`/learning-graph/me/anchors?english_lemma=${encodeURIComponent(englishLemma)}&limit=${limit}`),
+  learningGraphObservability: () => request("/learning-graph/me/observability"),
 
   translateMe: (payload) => request("/translate/me", { method: "POST", body: JSON.stringify(payload) }),
   /** Returns { task_id, status, message } — use pollTask(task_id) to wait for the result. */
@@ -110,3 +115,5 @@ export const api = {
   /** Poll a task by ID. */
   getTaskStatus: (taskId) => request(`/tasks/${taskId}`),
 };
+
+

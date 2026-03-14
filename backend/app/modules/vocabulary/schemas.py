@@ -1,5 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.modules.capture.schemas import CaptureItem
+
 
 class VocabularyItemCreate(BaseModel):
     user_id: int | None = Field(default=None, ge=1)
@@ -34,3 +36,26 @@ class VocabularyItemUpdateMe(BaseModel):
     russian_translation: str = Field(min_length=1, max_length=200)
     source_sentence: str | None = Field(default=None, max_length=2000)
     source_url: str | None = Field(default=None, max_length=2000)
+
+
+class VocabularyFromCaptureRequest(BaseModel):
+    user_id: int | None = Field(default=None, ge=1)
+    selected_text: str = Field(min_length=1, max_length=2000)
+    source_url: str | None = Field(default=None, max_length=2000)
+    source_sentence: str | None = Field(default=None, max_length=5000)
+    force_new_vocabulary_item: bool = False
+
+
+class VocabularyFromCaptureRequestMe(BaseModel):
+    selected_text: str = Field(min_length=1, max_length=2000)
+    source_url: str | None = Field(default=None, max_length=2000)
+    source_sentence: str | None = Field(default=None, max_length=5000)
+    force_new_vocabulary_item: bool = False
+
+
+class VocabularyFromCaptureResponse(BaseModel):
+    capture: CaptureItem
+    vocabulary: VocabularyItem
+    translation_note: str
+    created_new_vocabulary_item: bool
+    queued_for_review: bool

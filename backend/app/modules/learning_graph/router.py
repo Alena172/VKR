@@ -8,10 +8,12 @@ from app.modules.auth.dependencies import get_current_user_id
 from app.modules.learning_graph.repository import learning_graph_repository
 from app.modules.learning_graph.schemas import (
     InterestUpsertRequest,
+    LearningGraphObservabilityResponse,
     LearningGraphOverviewResponse,
     RecommendationsResponse,
     SemanticUpsertRequest,
     SemanticUpsertResponse,
+    SenseAnchorsResponse,
     TopicClusterRead,
     UserInterestsResponse,
     WordSenseRead,
@@ -136,3 +138,38 @@ def get_recommendations_me(
         limit=limit,
     )
     return RecommendationsResponse(user_id=current_user_id, mode=mode, items=items)
+
+
+@router.get("/me/observability", response_model=LearningGraphObservabilityResponse)
+def get_observability_me(
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> LearningGraphObservabilityResponse:
+    user = users_repository.get_by_id(db, current_user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    snapshot = learning_graph_repository.get_observability(user_id=current_user_id)
+    return LearningGraphObservabilityResponse(user_id=current_user_id, **snapshot)
+
+
+@router.get("/me/anchors", response_model=SenseAnchorsResponse)
+def get_anchors_me(
+    english_lemma: str = Query(min_length=1, max_length=200),
+    limit: int = Query(default=5, ge=1, le=50),
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> SenseAnchorsResponse:
+    user = users_repository.get_by_id(db, current_user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    anchors = learning_graph_repository.list_anchors(
+        db,
+        user_id=current_user_id,
+        english_lemma=english_lemma,
+        limit=limit,
+    )
+    return SenseAnchorsResponse(
+        user_id=current_user_id,
+        english_lemma=english_lemma.strip().lower(),
+        anchors=anchors,
+    )

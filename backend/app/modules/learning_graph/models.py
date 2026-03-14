@@ -57,6 +57,21 @@ class VocabularySenseLinkModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class SenseRelationModel(Base):
+    __tablename__ = "sense_relations"
+    __table_args__ = (
+        UniqueConstraint("user_id", "left_sense_id", "right_sense_id", name="uq_sense_relation_pair"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    left_sense_id: Mapped[int] = mapped_column(ForeignKey("word_senses.id"), nullable=False, index=True)
+    right_sense_id: Mapped[int] = mapped_column(ForeignKey("word_senses.id"), nullable=False, index=True)
+    relation_type: Mapped[str] = mapped_column(String(64), nullable=False, default="semantic_overlap")
+    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class MistakeEventModel(Base):
     __tablename__ = "mistake_events"
 

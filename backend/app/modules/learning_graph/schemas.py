@@ -73,6 +73,8 @@ class RecommendationItem(BaseModel):
     topic_cluster: str | None = None
     score: float
     reasons: list[str]
+    strategy_sources: list[str] = Field(default_factory=list)
+    primary_strategy: str | None = None
     mistake_count: int
 
 
@@ -80,3 +82,49 @@ class RecommendationsResponse(BaseModel):
     user_id: int
     mode: Literal["interest", "weakness", "mixed"]
     items: list[RecommendationItem]
+
+
+class SenseAnchorItem(BaseModel):
+    word_sense_id: int
+    english_lemma: str
+    russian_translation: str
+    semantic_key: str
+    relation_type: str
+    score: float
+    topic_cluster: str | None = None
+
+
+class SenseAnchorsResponse(BaseModel):
+    user_id: int
+    english_lemma: str
+    anchors: list[SenseAnchorItem]
+
+
+class StrategyLatencyMetric(BaseModel):
+    strategy: str
+    calls: int
+    avg_ms: float
+    p95_ms: float
+    max_ms: float
+    last_ms: float
+
+
+class StrategyDistributionMetric(BaseModel):
+    strategy: str
+    count: int
+    share: float
+
+
+class LearningGraphObservabilityResponse(BaseModel):
+    user_id: int
+    generated_at: datetime
+    last_updated: datetime
+    total_requests: int
+    empty_recommendations_share: float
+    weak_recommendations_share: float
+    avg_items_per_response: float
+    avg_top_score: float
+    avg_mean_score: float
+    weak_score_threshold: float
+    strategy_latency: list[StrategyLatencyMetric]
+    primary_strategy_distribution: list[StrategyDistributionMetric]

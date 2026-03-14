@@ -4,14 +4,18 @@ import secrets
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.modules.auth.dependencies import get_current_user_id
+from app.modules.context_memory.models import WordProgressModel
 from app.modules.context_memory.repository import context_repository
 from app.modules.context_memory.schemas import (
     ContextGarbageCleanupResponse,
     ContextRecommendations,
+    ProgressSnapshot,
+    ReviewSummary,
     ReviewPlanResponse,
     ReviewQueueBulkSubmitRequest,
     ReviewQueueBulkSubmitResponse,
@@ -27,8 +31,11 @@ from app.modules.context_memory.schemas import (
     WordProgressListResponse,
     WordProgressRead,
 )
+from app.modules.learning_graph.repository import learning_graph_repository
+from app.modules.learning_session.models import LearningSessionModel
 from app.modules.learning_session.repository import learning_session_repository
 from app.modules.users.repository import users_repository
+from app.modules.vocabulary.models import VocabularyItemModel
 from app.modules.vocabulary.repository import vocabulary_repository
 
 router = APIRouter(prefix="/context", tags=["context_memory"])
@@ -52,6 +59,30 @@ def _dedupe_keep_order(values: list[str]) -> list[str]:
         seen.add(key)
         result.append(key)
     return result
+
+
+def _apply_learning_graph_boost(
+    *,
+    db: Session,
+    user_id: int,
+    scores: dict[str, float],
+    limit: int,
+) -> None:
+    graph_items = learning_graph_repository.get_recommendations(
+        db,
+        user_id=user_id,
+        mode="mixed",
+        limit=max(limit * 3, 10),
+    )
+    for rank, item in enumerate(graph_items):
+        word = item.english_lemma.strip().lower()
+        if not _is_valid_review_word(word):
+            continue
+        # Rank-aware blend: top graph results get stronger contribution.
+        rank_decay = 1.0 / (rank + 1)
+        graph_signal = min(6.0, max(0.0, float(item.score)))
+        boost = 0.75 * rank_decay + 0.08 * graph_signal
+        scores[word] = scores.get(word, 0.0) + boost
 
 
 @router.get("/me", response_model=UserContext)
@@ -211,6 +242,117 @@ def cleanup_context_garbage_me(
     return cleanup_context_garbage(user_id=current_user_id, current_user_id=current_user_id, db=db)
 
 
+@router.get("/me/progress", response_model=ProgressSnapshot)
+def progress_me(
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> ProgressSnapshot:
+    return progress(user_id=None, current_user_id=current_user_id, db=db)
+
+
+@router.get("/me/review-summary", response_model=ReviewSummary)
+def review_summary_me(
+    min_streak: int = Query(default=3, ge=1, le=50),
+    min_errors: int = Query(default=3, ge=1, le=50),
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> ReviewSummary:
+    return review_summary(
+        user_id=current_user_id,
+        min_streak=min_streak,
+        min_errors=min_errors,
+        current_user_id=current_user_id,
+        db=db,
+    )
+
+
+@router.get("/progress", response_model=ProgressSnapshot)
+def progress(
+    user_id: int | None = Query(default=None, ge=1),
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> ProgressSnapshot:
+    total_stmt = select(func.count(LearningSessionModel.id))
+    avg_stmt = select(func.avg(LearningSessionModel.accuracy))
+
+    if user_id is not None and user_id != current_user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    target_user_id = user_id or current_user_id
+    total_stmt = total_stmt.where(LearningSessionModel.user_id == target_user_id)
+    avg_stmt = avg_stmt.where(LearningSessionModel.user_id == target_user_id)
+
+    total = db.scalar(total_stmt) or 0
+    avg = db.scalar(avg_stmt) or 0.0
+
+    return ProgressSnapshot(
+        user_id=target_user_id,
+        total_sessions=int(total),
+        avg_accuracy=round(float(avg), 4),
+    )
+
+
+@router.get("/review-summary", response_model=ReviewSummary)
+def review_summary(
+    user_id: int = Query(ge=1),
+    min_streak: int = Query(default=3, ge=1, le=50),
+    min_errors: int = Query(default=3, ge=1, le=50),
+    current_user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> ReviewSummary:
+    if user_id != current_user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    user = users_repository.get_by_id(db, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    vocab_exists = exists(
+        select(1).where(
+            VocabularyItemModel.user_id == user_id,
+            VocabularyItemModel.english_lemma == WordProgressModel.word,
+        )
+    )
+    base_stmt = select(WordProgressModel).where(
+        WordProgressModel.user_id == user_id,
+        vocab_exists,
+    )
+
+    total_tracked = int(db.scalar(select(func.count()).select_from(base_stmt.subquery())) or 0)
+    now_utc = datetime.utcnow()
+    due_now = int(
+        db.scalar(
+            select(func.count()).select_from(
+                base_stmt.where(WordProgressModel.next_review_at <= now_utc).subquery()
+            )
+        )
+        or 0
+    )
+    mastered = int(
+        db.scalar(
+            select(func.count()).select_from(
+                base_stmt.where(WordProgressModel.correct_streak >= min_streak).subquery()
+            )
+        )
+        or 0
+    )
+    troubled = int(
+        db.scalar(
+            select(func.count()).select_from(
+                base_stmt.where(WordProgressModel.error_count >= min_errors).subquery()
+            )
+        )
+        or 0
+    )
+
+    return ReviewSummary(
+        user_id=user_id,
+        total_tracked=total_tracked,
+        due_now=due_now,
+        mastered=mastered,
+        troubled=troubled,
+    )
+
+
 @router.get("/{user_id}", response_model=UserContext)
 def get_context(
     user_id: int,
@@ -288,6 +430,13 @@ def get_recommendations(
         # Due words are prioritized to support spaced repetition.
         if progress.next_review_at <= now:
             scores[word] = scores.get(word, 0.0) + 1.25
+
+    _apply_learning_graph_boost(
+        db=db,
+        user_id=user_id,
+        scores=scores,
+        limit=limit,
+    )
 
     ranked_words = [key for key, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True)]
     words = ranked_words[:limit]
@@ -730,6 +879,13 @@ def get_review_plan(
     for word, progress in progress_map.items():
         if progress.next_review_at <= now:
             scores[word] = scores.get(word, 0.0) + 1.25
+
+    _apply_learning_graph_boost(
+        db=db,
+        user_id=user_id,
+        scores=scores,
+        limit=limit,
+    )
     ranked = [key for key, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True)]
 
     return ReviewPlanResponse(
