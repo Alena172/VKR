@@ -40,6 +40,15 @@ dist/
 build/
 coverage/
 
+# draw.io
+*.drawio
+*.drawio.bkp
+
+# PlantUML
+*.puml
+*.plantuml
+*.pu
+
 # Env files (keep only examples)
 .env
 .env.*
