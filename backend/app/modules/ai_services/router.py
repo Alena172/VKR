@@ -7,8 +7,8 @@ router = APIRouter(prefix="/ai", tags=["ai_services"])
 
 
 @router.post("/explain-error", response_model=ExplainErrorResponse)
-def explain_error(payload: ExplainErrorRequest) -> ExplainErrorResponse:
-    return ai_service.explain_error(payload)
+async def explain_error(payload: ExplainErrorRequest) -> ExplainErrorResponse:
+    return await ai_service.explain_error_async(payload)
 
 
 @router.get("/status", response_model=AIStatusResponse)

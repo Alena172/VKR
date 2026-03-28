@@ -11,6 +11,7 @@ from app.core.db import get_db
 from app.modules.auth.dependencies import get_current_user_id
 from app.modules.context_memory.models import WordProgressModel
 from app.modules.context_memory.repository import context_repository
+from app.modules.context_memory.recommendation_scoring_service import recommendation_scoring_service
 from app.modules.context_memory.schemas import (
     ContextGarbageCleanupResponse,
     ContextRecommendations,
@@ -31,9 +32,7 @@ from app.modules.context_memory.schemas import (
     WordProgressListResponse,
     WordProgressRead,
 )
-from app.modules.learning_graph.repository import learning_graph_repository
 from app.modules.learning_session.models import LearningSessionModel
-from app.modules.learning_session.repository import learning_session_repository
 from app.modules.users.repository import users_repository
 from app.modules.vocabulary.models import VocabularyItemModel
 from app.modules.vocabulary.repository import vocabulary_repository
@@ -59,31 +58,6 @@ def _dedupe_keep_order(values: list[str]) -> list[str]:
         seen.add(key)
         result.append(key)
     return result
-
-
-def _apply_learning_graph_boost(
-    *,
-    db: Session,
-    user_id: int,
-    scores: dict[str, float],
-    limit: int,
-) -> None:
-    graph_items = learning_graph_repository.get_recommendations(
-        db,
-        user_id=user_id,
-        mode="mixed",
-        limit=max(limit * 3, 10),
-    )
-    for rank, item in enumerate(graph_items):
-        word = item.english_lemma.strip().lower()
-        if not _is_valid_review_word(word):
-            continue
-        # Rank-aware blend: top graph results get stronger contribution.
-        rank_decay = 1.0 / (rank + 1)
-        graph_signal = min(6.0, max(0.0, float(item.score)))
-        boost = 0.75 * rank_decay + 0.08 * graph_signal
-        scores[word] = scores.get(word, 0.0) + boost
-
 
 @router.get("/me", response_model=UserContext)
 def get_context_me(
@@ -395,54 +369,15 @@ def get_recommendations(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    context = context_repository.get_by_user_id(db, user_id)
-    difficult_words = [
-        word.strip().lower()
-        for word in (context.difficult_words if context is not None else [])
-        if _is_valid_review_word(word)
-    ]
-    recent_error_words_stream = learning_session_repository.list_recent_incorrect_words(
-        db,
-        user_id=user_id,
-        limit=limit * 5,
-        unique=False,
-    )
-
-    scores: dict[str, float] = {}
-    for idx, word in enumerate(recent_error_words_stream):
-        # Recency decay: newest mistakes have higher weight.
-        if not _is_valid_review_word(word):
-            continue
-        recency_weight = 1.0 / (idx + 1)
-        scores[word] = scores.get(word, 0.0) + recency_weight
-
-    for word in difficult_words:
-        # Difficult words receive a stable bonus even without recent mistakes.
-        scores[word] = scores.get(word, 0.0) + 0.75
-
-    progress_map = context_repository.get_word_progress_map(
-        db,
-        user_id=user_id,
-        words=list(scores.keys()),
-    )
-    now = datetime.utcnow()
-    for word, progress in progress_map.items():
-        # Due words are prioritized to support spaced repetition.
-        if progress.next_review_at <= now:
-            scores[word] = scores.get(word, 0.0) + 1.25
-
-    _apply_learning_graph_boost(
+    snapshot = recommendation_scoring_service.build_snapshot(
         db=db,
         user_id=user_id,
-        scores=scores,
         limit=limit,
     )
-
-    ranked_words = [key for key, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True)]
-    words = ranked_words[:limit]
+    words = snapshot.ranked_words(limit)
 
     recent_error_words: list[str] = []
-    for word in recent_error_words_stream:
+    for word in snapshot.recent_error_words_stream:
         if word not in recent_error_words:
             recent_error_words.append(word)
         if len(recent_error_words) >= limit:
@@ -452,9 +387,12 @@ def get_recommendations(
         user_id=user_id,
         words=words,
         recent_error_words=recent_error_words,
-        difficult_words=difficult_words[:limit],
-        scores={word: round(scores[word], 6) for word in words},
-        next_review_at={word: progress_map.get(word).next_review_at if progress_map.get(word) else None for word in words},
+        difficult_words=snapshot.difficult_words[:limit],
+        scores={word: round(snapshot.scores[word], 6) for word in words},
+        next_review_at={
+            word: snapshot.due_progress_map.get(word).next_review_at if snapshot.due_progress_map.get(word) else None
+            for word in words
+        },
     )
 
 
@@ -854,39 +792,11 @@ def get_review_plan(
         if _is_valid_review_word(row.word)
     ]
 
-    context = context_repository.get_by_user_id(db, user_id)
-    difficult_words = [
-        word.strip().lower()
-        for word in (context.difficult_words if context is not None else [])
-        if _is_valid_review_word(word)
-    ]
-    recent_error_words_stream = learning_session_repository.list_recent_incorrect_words(
-        db,
-        user_id=user_id,
-        limit=limit * 5,
-        unique=False,
-    )
-    scores: dict[str, float] = {}
-    for idx, word in enumerate(recent_error_words_stream):
-        if not _is_valid_review_word(word):
-            continue
-        scores[word] = scores.get(word, 0.0) + (1.0 / (idx + 1))
-    for word in difficult_words:
-        scores[word] = scores.get(word, 0.0) + 0.75
-
-    progress_map = context_repository.get_word_progress_map(db, user_id=user_id, words=list(scores.keys()))
-    now = datetime.utcnow()
-    for word, progress in progress_map.items():
-        if progress.next_review_at <= now:
-            scores[word] = scores.get(word, 0.0) + 1.25
-
-    _apply_learning_graph_boost(
+    snapshot = recommendation_scoring_service.build_snapshot(
         db=db,
         user_id=user_id,
-        scores=scores,
         limit=limit,
     )
-    ranked = [key for key, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True)]
 
     return ReviewPlanResponse(
         user_id=user_id,
@@ -894,7 +804,7 @@ def get_review_plan(
         upcoming_count=len(upcoming),
         due_now=due_now,
         upcoming=upcoming,
-        recommended_words=ranked[:limit],
+        recommended_words=snapshot.ranked_words(limit),
     )
 
 

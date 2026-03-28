@@ -1,63 +1,22 @@
 from datetime import date, datetime, time, timedelta
-import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.modules.auth.dependencies import get_current_user_id
-from app.modules.ai_services.contracts import ExplainErrorRequest
-from app.modules.ai_services.service import ai_service
-from app.modules.context_memory.repository import context_repository
-from app.modules.learning_graph.repository import learning_graph_repository
-from app.modules.learning_session.repository import AnswerPersistPayload, learning_session_repository
-from app.modules.learning_session.evaluation import is_answer_correct, normalize_answer
+from app.modules.learning_session.repository import learning_session_repository
 from app.modules.learning_session.schemas import (
     SessionAnswerRead,
-    SessionAnswerFeedback,
     SessionHistoryResponse,
     SessionSubmitRequest,
     SessionSubmitResponse,
     SessionSummary,
 )
+from app.modules.learning_session.submission_service import learning_session_submission_service
 from app.modules.users.repository import users_repository
 
 router = APIRouter(prefix="/sessions", tags=["learning_session"])
-
-
-_WORD_RE = re.compile(r"^[a-z][a-z'-]{0,48}$")
-
-
-def _normalize_word_candidate(value: str | None) -> str | None:
-    if not value:
-        return None
-    candidate = value.strip().lower().strip(" \t\n\r\"'`.,!?;:()[]{}")
-    if not candidate or not _WORD_RE.fullmatch(candidate):
-        return None
-    return candidate
-
-
-def _extract_progress_word(
-    *,
-    prompt: str | None,
-    expected_answer: str | None,
-    vocabulary_words: set[str],
-) -> str | None:
-    # For word scramble tasks answer is usually the target english lemma.
-    normalized_answer = _normalize_word_candidate(expected_answer)
-    if normalized_answer and (not vocabulary_words or normalized_answer in vocabulary_words):
-        return normalized_answer
-
-    if not prompt:
-        return None
-
-    # For definition match tasks prompt often ends with ": <word>".
-    after_colon = prompt.split(":", maxsplit=1)[-1]
-    normalized_prompt_word = _normalize_word_candidate(after_colon)
-    if normalized_prompt_word and (not vocabulary_words or normalized_prompt_word in vocabulary_words):
-        return normalized_prompt_word
-
-    return None
 
 
 @router.get("", response_model=list[SessionSummary])
@@ -148,7 +107,7 @@ def list_my_session_answers(
 
 
 @router.post("/submit", response_model=SessionSubmitResponse)
-def submit_session(
+async def submit_session(
     payload: SessionSubmitRequest,
     current_user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
@@ -159,154 +118,9 @@ def submit_session(
     user = users_repository.get_by_id(db, target_user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-
-    feedback: list[SessionAnswerFeedback] = []
-    advice_feedback: list[SessionAnswerFeedback] = []
-    to_persist: list[AnswerPersistPayload] = []
-    difficult_words_to_add: list[str] = []
-    total = len(payload.answers)
-    correct = 0
-
-    for answer in payload.answers:
-        evaluated_is_correct = is_answer_correct(answer.expected_answer, answer.user_answer)
-        explanation_ru: str | None = None
-        advice_added = False
-        normalized_expected = normalize_answer(answer.expected_answer)
-        normalized_user = normalize_answer(answer.user_answer)
-
-        if (
-            not evaluated_is_correct
-            and answer.prompt
-            and answer.expected_answer
-            and len(normalized_expected.split()) >= 5
-        ):
-            # Semantic pass for full sentence translations:
-            # near-paraphrases should be accepted, with style feedback instead of hard error.
-            semantic_ok = ai_service.is_translation_semantically_correct(
-                english_prompt=answer.prompt,
-                expected_answer=answer.expected_answer,
-                user_answer=answer.user_answer,
-            )
-            if semantic_ok:
-                evaluated_is_correct = True
-                ai_hint = ai_service.suggest_improvement(
-                    ExplainErrorRequest(
-                        english_prompt=answer.prompt,
-                        user_answer=answer.user_answer,
-                        expected_answer=answer.expected_answer,
-                    )
-                )
-                explanation_ru = ai_hint.explanation_ru
-                advice_feedback.append(
-                    SessionAnswerFeedback(
-                        exercise_id=answer.exercise_id,
-                        explanation_ru=explanation_ru,
-                    )
-                )
-                advice_added = True
-
-        if (
-            not evaluated_is_correct
-            and answer.prompt
-            and answer.expected_answer
-        ):
-            ai_explanation = ai_service.explain_error(
-                ExplainErrorRequest(
-                    english_prompt=answer.prompt,
-                    user_answer=answer.user_answer,
-                    expected_answer=answer.expected_answer,
-                )
-            )
-            explanation_ru = ai_explanation.explanation_ru
-            feedback.append(
-                SessionAnswerFeedback(
-                    exercise_id=answer.exercise_id,
-                    explanation_ru=explanation_ru,
-                )
-            )
-            prompt_word = _extract_progress_word(
-                prompt=answer.prompt,
-                expected_answer=answer.expected_answer,
-                vocabulary_words=set(),
-            )
-            if prompt_word:
-                difficult_words_to_add.append(prompt_word)
-            learning_graph_repository.add_mistake_event(
-                db,
-                user_id=target_user_id,
-                english_lemma=prompt_word,
-                prompt=answer.prompt,
-                expected_answer=answer.expected_answer,
-                user_answer=answer.user_answer,
-            )
-        elif (
-            evaluated_is_correct
-            and answer.prompt
-            and answer.expected_answer
-            and normalized_expected
-            and normalized_expected != normalized_user
-            and not advice_added
-        ):
-            ai_hint = ai_service.suggest_improvement(
-                ExplainErrorRequest(
-                    english_prompt=answer.prompt,
-                    user_answer=answer.user_answer,
-                    expected_answer=answer.expected_answer,
-                )
-            )
-            explanation_ru = ai_hint.explanation_ru
-            advice_feedback.append(
-                SessionAnswerFeedback(
-                    exercise_id=answer.exercise_id,
-                    explanation_ru=explanation_ru,
-                )
-            )
-
-        if evaluated_is_correct:
-            correct += 1
-
-        progress_word = _extract_progress_word(
-            prompt=answer.prompt,
-            expected_answer=answer.expected_answer,
-            vocabulary_words=set(),
-        )
-        if progress_word:
-            context_repository.update_word_progress(
-                db,
-                user_id=target_user_id,
-                word=progress_word,
-                is_correct=evaluated_is_correct,
-            )
-
-        to_persist.append(
-            AnswerPersistPayload(
-                exercise_id=answer.exercise_id,
-                prompt=answer.prompt,
-                expected_answer=answer.expected_answer,
-                user_answer=answer.user_answer,
-                is_correct=evaluated_is_correct,
-                explanation_ru=explanation_ru,
-            )
-        )
-
-    context_repository.add_difficult_words(
-        db,
+    return await learning_session_submission_service.submit(
+        db=db,
         user_id=target_user_id,
-        words=difficult_words_to_add,
-        default_cefr_level=user.cefr_level,
-    )
-
-    session_row = learning_session_repository.create_with_answers(
-        db,
-        user_id=target_user_id,
-        total=total,
-        correct=correct,
-        accuracy=round((correct / total), 4) if total else 0.0,
-        answers=to_persist,
-    )
-
-    return SessionSubmitResponse(
-        session=session_row,
-        incorrect_feedback=feedback,
-        advice_feedback=advice_feedback,
+        user_cefr_level=user.cefr_level,
+        answers=payload.answers,
     )

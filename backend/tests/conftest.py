@@ -2,6 +2,7 @@ from collections.abc import Generator
 import os
 
 os.environ.setdefault("TRANSLATION_STRICT_REMOTE", "false")
+os.environ.setdefault("TRUSTED_HOSTS", "localhost,127.0.0.1,backend,gateway,testserver,*.ngrok-free.dev")
 
 import pytest
 from fastapi.testclient import TestClient

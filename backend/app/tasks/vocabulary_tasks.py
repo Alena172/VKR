@@ -41,10 +41,12 @@ def add_word_with_ai(
 
     db = SessionLocal()
     try:
-        context_definition_ru = ai_service.generate_context_definition(
-            english_lemma=english_lemma,
-            russian_translation=russian_translation,
-            source_sentence=source_sentence,
+        context_definition_ru = asyncio.run(
+            ai_service.generate_context_definition_async(
+                english_lemma=english_lemma,
+                russian_translation=russian_translation,
+                source_sentence=source_sentence,
+            )
         )
         item = vocabulary_repository.create(
             db,

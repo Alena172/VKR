@@ -29,12 +29,27 @@ def get_task_status(
 
     Returns the task result once it reaches SUCCESS state.
     """
+    from app.celery_app import CELERY_AVAILABLE, _LOCAL_TASK_RESULTS, celery_app
+
+    if not CELERY_AVAILABLE:
+        task_data = _LOCAL_TASK_RESULTS.get(task_id)
+        if task_data is None:
+            return TaskStatusResponse(task_id=task_id, status="PENDING")
+        if task_data["status"] == "SUCCESS":
+            task_result = task_data["result"]
+            if isinstance(task_result, dict):
+                return TaskStatusResponse(task_id=task_id, status="SUCCESS", result=task_result)
+            if isinstance(task_result, list):
+                return TaskStatusResponse(task_id=task_id, status="SUCCESS", result=task_result)
+            return TaskStatusResponse(task_id=task_id, status="SUCCESS", result={"value": task_result})
+        if task_data["status"] == "FAILURE":
+            return TaskStatusResponse(task_id=task_id, status="FAILURE", error=task_data["error"])
+        return TaskStatusResponse(task_id=task_id, status=task_data["status"])
+
     from celery.result import AsyncResult
 
-    from app.celery_app import celery_app
-
     result = AsyncResult(task_id, app=celery_app)
-    status = result.status  # PENDING, STARTED, SUCCESS, FAILURE, RETRY, REVOKED
+    status = result.status
 
     if status == "SUCCESS":
         task_result = result.result
