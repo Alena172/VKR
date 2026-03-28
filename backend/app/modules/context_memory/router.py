@@ -546,12 +546,7 @@ def submit_review_queue_bulk(
         english_lemmas=[item.word for item in updated_progress],
     )
     for item in updated_progress:
-        progress = context_repository.get_word_progress(db, user_id=user_id, word=item.word)
-        if progress is not None:
-            item.error_count = progress.error_count
-            item.correct_streak = progress.correct_streak
-            item.next_review_at = progress.next_review_at
-            item.russian_translation = translation_map.get(item.word)
+        item.russian_translation = translation_map.get(item.word)
 
     return ReviewQueueBulkSubmitResponse(user_id=user_id, updated=updated_progress)
 
