@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, pollTask } from "../lib/api";
+import { api, getErrorMessage, isAbortError, pollTask } from "../lib/api";
 import LoadingSpinner from "../components/LoadingSpinner";
+import { useAbortControllers } from "../hooks/useAbortControllers";
 
 export default function VocabularyPage({ onError }) {
   const [selectedText, setSelectedText] = useState("apple");
@@ -19,15 +20,20 @@ export default function VocabularyPage({ onError }) {
   const [studyFlowLoading, setStudyFlowLoading] = useState(false);
   const [studyFlowStatus, setStudyFlowStatus] = useState("");
   const [translateLoading, setTranslateLoading] = useState(false);
+  const { registerController, releaseController } = useAbortControllers();
 
   async function loadVocabulary() {
     setLoading(true);
+    const controller = registerController();
     try {
-      const data = await api.listVocabularyMe();
+      const data = await api.listVocabularyMe({ signal: controller.signal });
       setItems(data);
     } catch (error) {
-      onError(error.message);
+      if (!isAbortError(error)) {
+        onError(getErrorMessage(error));
+      }
     } finally {
+      releaseController(controller);
       setLoading(false);
     }
   }
@@ -37,18 +43,18 @@ export default function VocabularyPage({ onError }) {
     setStudyFlowLoading(true);
     setStudyFlowStatus("Отправляю задачу...");
     onError("");
+    const controller = registerController();
     try {
-      // 1. Dispatch the task — returns immediately with task_id
       const { task_id } = await api.studyFlowCaptureToVocabularyMe({
         selected_text: selectedText,
         source_sentence: sourceSentence,
-      });
+      }, { signal: controller.signal });
 
-      // 2. Poll until done, updating status message
       setStudyFlowStatus("Обрабатываю слово...");
       await pollTask(task_id, {
         intervalMs: 800,
         maxAttempts: 90,
+        signal: controller.signal,
         onStatus: (status) => {
           if (status === "STARTED") setStudyFlowStatus("AI генерирует определение...");
           else if (status === "RETRY") setStudyFlowStatus("Повторная попытка...");
@@ -58,8 +64,11 @@ export default function VocabularyPage({ onError }) {
       setStudyFlowStatus("Готово!");
       await loadVocabulary();
     } catch (error) {
-      onError(error.message);
+      if (!isAbortError(error)) {
+        onError(getErrorMessage(error));
+      }
     } finally {
+      releaseController(controller);
       setStudyFlowLoading(false);
       setStudyFlowStatus("");
     }
@@ -70,12 +79,16 @@ export default function VocabularyPage({ onError }) {
     setTranslationResult("");
     setTranslateLoading(true);
     onError("");
+    const controller = registerController();
     try {
-      const data = await api.translateMe({ text: translateText, source_context: translateContext });
+      const data = await api.translateMe({ text: translateText, source_context: translateContext }, { signal: controller.signal });
       setTranslationResult(data.translated_text);
     } catch (error) {
-      onError(error.message);
+      if (!isAbortError(error)) {
+        onError(getErrorMessage(error));
+      }
     } finally {
+      releaseController(controller);
       setTranslateLoading(false);
     }
   }
@@ -111,7 +124,7 @@ export default function VocabularyPage({ onError }) {
       cancelEdit();
       await loadVocabulary();
     } catch (error) {
-      onError(error.message);
+      onError(getErrorMessage(error));
     }
   }
 
@@ -123,7 +136,7 @@ export default function VocabularyPage({ onError }) {
       }
       await loadVocabulary();
     } catch (error) {
-      onError(error.message);
+      onError(getErrorMessage(error));
     }
   }
 

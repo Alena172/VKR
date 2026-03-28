@@ -13,11 +13,20 @@ class VocabularyRepository:
         stmt = stmt.order_by(VocabularyItemModel.id.desc())
         return list(db.scalars(stmt))
 
-    def create(self, db: Session, payload: VocabularyItemCreate) -> VocabularyItemModel:
+    def create(
+        self,
+        db: Session,
+        payload: VocabularyItemCreate,
+        *,
+        auto_commit: bool = True,
+    ) -> VocabularyItemModel:
         item = VocabularyItemModel(**payload.model_dump())
         db.add(item)
-        db.commit()
-        db.refresh(item)
+        if auto_commit:
+            db.commit()
+            db.refresh(item)
+        else:
+            db.flush()
         return item
 
     def get_by_id_for_user(self, db: Session, item_id: int, user_id: int) -> VocabularyItemModel | None:
@@ -36,19 +45,26 @@ class VocabularyRepository:
         russian_translation: str,
         source_sentence: str | None,
         source_url: str | None,
+        auto_commit: bool = True,
     ) -> VocabularyItemModel:
         item.english_lemma = english_lemma.strip().lower()
         item.russian_translation = russian_translation.strip()
         item.source_sentence = source_sentence.strip() if source_sentence else None
         item.source_url = source_url.strip() if source_url else None
         db.add(item)
-        db.commit()
-        db.refresh(item)
+        if auto_commit:
+            db.commit()
+            db.refresh(item)
+        else:
+            db.flush()
         return item
 
-    def delete(self, db: Session, item: VocabularyItemModel) -> None:
+    def delete(self, db: Session, item: VocabularyItemModel, *, auto_commit: bool = True) -> None:
         db.delete(item)
-        db.commit()
+        if auto_commit:
+            db.commit()
+        else:
+            db.flush()
 
     def get_translation_map(
         self,

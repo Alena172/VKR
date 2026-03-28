@@ -120,6 +120,8 @@ class LearningSessionRepository:
         correct: int,
         accuracy: float,
         answers: list[AnswerPersistPayload],
+        *,
+        auto_commit: bool = True,
     ) -> LearningSessionModel:
         session_row = LearningSessionModel(
             user_id=user_id,
@@ -143,8 +145,11 @@ class LearningSessionRepository:
                 )
             )
 
-        db.commit()
-        db.refresh(session_row)
+        if auto_commit:
+            db.commit()
+            db.refresh(session_row)
+        else:
+            db.flush()
         return session_row
 
     def list_recent_incorrect_words(

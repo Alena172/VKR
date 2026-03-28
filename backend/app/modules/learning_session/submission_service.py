@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import re
 
@@ -66,7 +67,16 @@ class EvaluatedAnswer:
 
 class LearningSessionSubmissionService:
     async def evaluate_answers(self, answers: list[SessionAnswer]) -> list[EvaluatedAnswer]:
-        return [await self._evaluate_answer(answer) for answer in answers]
+        if not answers:
+            return []
+
+        semaphore = asyncio.Semaphore(4)
+
+        async def evaluate_with_limit(answer: SessionAnswer) -> EvaluatedAnswer:
+            async with semaphore:
+                return await self._evaluate_answer(answer)
+
+        return await asyncio.gather(*(evaluate_with_limit(answer) for answer in answers))
 
     async def _evaluate_answer(self, answer: SessionAnswer) -> EvaluatedAnswer:
         evaluated_is_correct = is_answer_correct(answer.expected_answer, answer.user_answer)
@@ -208,6 +218,7 @@ class LearningSessionSubmissionService:
             user_id=user_id,
             words=difficult_words_to_add,
             default_cefr_level=user_cefr_level,
+            auto_commit=False,
         )
         return difficult_words_to_add
 
@@ -237,6 +248,7 @@ class LearningSessionSubmissionService:
                 )
                 for item in evaluated_answers
             ],
+            auto_commit=False,
         )
 
     async def submit(
@@ -247,24 +259,30 @@ class LearningSessionSubmissionService:
         user_cefr_level: str | None,
         answers: list[SessionAnswer],
     ) -> SessionSubmitResponse:
-        evaluated_answers = await self.evaluate_answers(answers)
-        incorrect_feedback, advice_feedback = self.collect_feedback(evaluated_answers)
-        self.update_progress(
-            db=db,
-            user_id=user_id,
-            user_cefr_level=user_cefr_level,
-            evaluated_answers=evaluated_answers,
-        )
-        session_row = self.persist_session(
-            db=db,
-            user_id=user_id,
-            evaluated_answers=evaluated_answers,
-        )
-        return SessionSubmitResponse(
-            session=session_row,
-            incorrect_feedback=incorrect_feedback,
-            advice_feedback=advice_feedback,
-        )
+        try:
+            evaluated_answers = await self.evaluate_answers(answers)
+            incorrect_feedback, advice_feedback = self.collect_feedback(evaluated_answers)
+            self.update_progress(
+                db=db,
+                user_id=user_id,
+                user_cefr_level=user_cefr_level,
+                evaluated_answers=evaluated_answers,
+            )
+            session_row = self.persist_session(
+                db=db,
+                user_id=user_id,
+                evaluated_answers=evaluated_answers,
+            )
+            db.commit()
+            db.refresh(session_row)
+            return SessionSubmitResponse(
+                session=session_row,
+                incorrect_feedback=incorrect_feedback,
+                advice_feedback=advice_feedback,
+            )
+        except Exception:
+            db.rollback()
+            raise
 
 
 learning_session_submission_service = LearningSessionSubmissionService()

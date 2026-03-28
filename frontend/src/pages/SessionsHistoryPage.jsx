@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { api, getErrorMessage, isAbortError } from "../lib/api";
+import { useAbortControllers } from "../hooks/useAbortControllers";
 
 function formatDate(value) {
   if (!value) {
@@ -25,12 +26,14 @@ export default function SessionsHistoryPage({ onError }) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [loadingSessions, setLoadingSessions] = useState(false);
+  const { registerController, releaseController } = useAbortControllers();
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const safePage = Math.min(page, totalPages);
 
   async function loadSessions(targetPage = safePage) {
     setLoadingSessions(true);
+    const controller = registerController();
     try {
       const offset = (targetPage - 1) * pageSize;
       const data = await api.listSessionsMe({
@@ -40,7 +43,7 @@ export default function SessionsHistoryPage({ onError }) {
         max_accuracy: maxAccuracy,
         date_from: dateFrom,
         date_to: dateTo,
-      });
+      }, { signal: controller.signal });
       setSessions(data.items);
       setTotal(data.total);
       const nextTotalPages = Math.max(1, Math.ceil(data.total / pageSize));
@@ -52,21 +55,28 @@ export default function SessionsHistoryPage({ onError }) {
         setAnswers([]);
       }
     } catch (error) {
-      onError(error.message);
+      if (!isAbortError(error)) {
+        onError(getErrorMessage(error));
+      }
     } finally {
+      releaseController(controller);
       setLoadingSessions(false);
     }
   }
 
   async function loadAnswers(sessionId) {
     setLoadingAnswers(true);
+    const controller = registerController();
     try {
-      const data = await api.listSessionAnswersMe(sessionId);
+      const data = await api.listSessionAnswersMe(sessionId, { signal: controller.signal });
       setSelectedSessionId(sessionId);
       setAnswers(data);
     } catch (error) {
-      onError(error.message);
+      if (!isAbortError(error)) {
+        onError(getErrorMessage(error));
+      }
     } finally {
+      releaseController(controller);
       setLoadingAnswers(false);
     }
   }

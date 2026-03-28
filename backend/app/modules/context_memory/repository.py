@@ -68,6 +68,8 @@ class ContextMemoryRepository:
         user_id: int,
         words: list[str],
         default_cefr_level: str,
+        *,
+        auto_commit: bool = True,
     ) -> UserContext:
         normalized: list[str] = []
         seen: set[str] = set()
@@ -88,8 +90,11 @@ class ContextMemoryRepository:
                 difficult_words="[]",
             )
             db.add(row)
-            db.commit()
-            db.refresh(row)
+            if auto_commit:
+                db.commit()
+                db.refresh(row)
+            else:
+                db.flush()
             return UserContext(
                 user_id=row.user_id,
                 cefr_level=row.cefr_level,
@@ -107,8 +112,11 @@ class ContextMemoryRepository:
                 difficult_words=json.dumps(merged_words, ensure_ascii=False),
             )
             db.add(row)
-            db.commit()
-            db.refresh(row)
+            if auto_commit:
+                db.commit()
+                db.refresh(row)
+            else:
+                db.flush()
             return UserContext(
                 user_id=row.user_id,
                 cefr_level=row.cefr_level,
@@ -119,8 +127,11 @@ class ContextMemoryRepository:
         existing = json.loads(row.difficult_words)
         merged = sorted(set(existing + normalized))
         row.difficult_words = json.dumps(merged, ensure_ascii=False)
-        db.commit()
-        db.refresh(row)
+        if auto_commit:
+            db.commit()
+            db.refresh(row)
+        else:
+            db.flush()
         return UserContext(
             user_id=row.user_id,
             cefr_level=row.cefr_level,

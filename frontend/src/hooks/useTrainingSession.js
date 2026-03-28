@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, getErrorMessage, isAbortError, pollTask } from "../lib/api";
+import { useAbortControllers } from "./useAbortControllers";
 
 const PREFETCH_BATCH_SIZE = 2;
 
@@ -17,24 +18,9 @@ export function useTrainingSession({ onError }) {
   const [sessionResult, setSessionResult] = useState(null);
   const [isTrainingActive, setIsTrainingActive] = useState(false);
   const [generationNote, setGenerationNote] = useState("");
-  const controllersRef = useRef(new Set());
+  const { abortAllRequests, registerController, releaseController } = useAbortControllers();
 
   const progressPercent = size > 0 ? Math.round((currentIndex / size) * 100) : 0;
-
-  function registerController() {
-    const controller = new AbortController();
-    controllersRef.current.add(controller);
-    return controller;
-  }
-
-  function releaseController(controller) {
-    controllersRef.current.delete(controller);
-  }
-
-  function abortAllRequests() {
-    controllersRef.current.forEach((controller) => controller.abort());
-    controllersRef.current.clear();
-  }
 
   async function generateBatch(targetMode, batchSize, signal) {
     const { task_id } = await api.generateExercisesMe(
@@ -215,13 +201,6 @@ export function useTrainingSession({ onError }) {
       releaseController(controller);
     };
   }, [bufferExercises.length, fetchedCount, isTrainingActive, loadingCurrent, mode, onError, size]);
-
-  useEffect(() => {
-    return () => {
-      abortAllRequests();
-    };
-  }, []);
-
   const answerReady = useMemo(() => {
     if (!currentExercise) {
       return false;

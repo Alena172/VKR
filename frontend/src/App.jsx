@@ -5,7 +5,8 @@ import VocabularyPage from "./pages/VocabularyPage";
 import ReviewPage from "./pages/ReviewPage";
 import TrainingPage from "./pages/TrainingPage";
 import SessionsHistoryPage from "./pages/SessionsHistoryPage";
-import { api, clearAuthToken, setAuthToken } from "./lib/api";
+import { useAbortControllers } from "./hooks/useAbortControllers";
+import { api, clearAuthToken, getErrorMessage, isAbortError, setAuthToken } from "./lib/api";
 
 const USER_ID_KEY = "vkr_user_id";
 const AUTH_TOKEN_KEY = "vkr_auth_token";
@@ -42,7 +43,7 @@ export default function App() {
       localStorage.setItem(USER_ID_KEY, String(authData.user_id));
       setAuthStatus(authData.is_new_user ? `Создан новый пользователь #${authData.user_id}` : `Вход выполнен (#${authData.user_id})`);
     } catch (e) {
-      setError(e.message);
+      setError(getErrorMessage(e));
     }
   }
 
@@ -62,7 +63,7 @@ export default function App() {
           setUserId(data.user_id);
           localStorage.setItem(USER_ID_KEY, String(data.user_id));
         })
-        .catch((e) => setError(e.message));
+        .catch((e) => setError(getErrorMessage(e)));
     }
   }, [authToken, userId]);
 
@@ -165,21 +166,19 @@ function HomePage({ onError }) {
     sessions_total: 0,
   });
   const [loading, setLoading] = useState(true);
+  const { registerController, releaseController } = useAbortControllers();
 
   useEffect(() => {
-    let cancelled = false;
     async function loadDashboard() {
       setLoading(true);
+      const controller = registerController();
       try {
-        await api.cleanupContextGarbage();
+        await api.cleanupContextGarbage({ signal: controller.signal });
         const [vocabulary, reviewSummary, sessions] = await Promise.all([
-          api.listVocabularyMe(),
-          api.reviewSummary(),
-          api.listSessionsMe({ limit: 1, offset: 0 }),
+          api.listVocabularyMe({ signal: controller.signal }),
+          api.reviewSummary({ signal: controller.signal }),
+          api.listSessionsMe({ limit: 1, offset: 0 }, { signal: controller.signal }),
         ]);
-        if (cancelled) {
-          return;
-        }
         setStats({
           total_words: vocabulary.length,
           in_learning: Math.max(vocabulary.length - reviewSummary.mastered, 0),
@@ -188,19 +187,15 @@ function HomePage({ onError }) {
           sessions_total: sessions.total,
         });
       } catch (e) {
-        if (!cancelled) {
-          onError(e.message);
+        if (!isAbortError(e)) {
+          onError(getErrorMessage(e));
         }
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        releaseController(controller);
+        setLoading(false);
       }
     }
     loadDashboard();
-    return () => {
-      cancelled = true;
-    };
   }, [onError]);
 
   const statsCards = [

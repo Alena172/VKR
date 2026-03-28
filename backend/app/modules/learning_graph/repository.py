@@ -262,6 +262,21 @@ class LearningGraphRepository:
         return [InterestItem(interest=row.display_name, weight=row.weight) for row in rows]
 
     def upsert_interests(self, db: Session, user_id: int, interests: list[InterestItem]) -> list[InterestItem]:
+        return self.upsert_interests_with_commit_control(
+            db,
+            user_id=user_id,
+            interests=interests,
+            auto_commit=True,
+        )
+
+    def upsert_interests_with_commit_control(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        interests: list[InterestItem],
+        auto_commit: bool,
+    ) -> list[InterestItem]:
         db.query(UserInterestModel).filter(UserInterestModel.user_id == user_id).delete()
         for interest in interests:
             key = self._normalize_interest_key(interest.interest)
@@ -275,7 +290,10 @@ class LearningGraphRepository:
                     weight=interest.weight,
                 )
             )
-        db.commit()
+        if auto_commit:
+            db.commit()
+        else:
+            db.flush()
         return self.list_interests(db, user_id)
 
     def _ensure_cluster(

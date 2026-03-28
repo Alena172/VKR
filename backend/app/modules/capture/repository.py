@@ -13,11 +13,20 @@ class CaptureRepository:
         stmt = stmt.order_by(CaptureItemModel.id.desc())
         return list(db.scalars(stmt))
 
-    def create(self, db: Session, payload: CaptureCreate) -> CaptureItemModel:
+    def create(
+        self,
+        db: Session,
+        payload: CaptureCreate,
+        *,
+        auto_commit: bool = True,
+    ) -> CaptureItemModel:
         row = CaptureItemModel(**payload.model_dump())
         db.add(row)
-        db.commit()
-        db.refresh(row)
+        if auto_commit:
+            db.commit()
+            db.refresh(row)
+        else:
+            db.flush()
         return row
 
 
